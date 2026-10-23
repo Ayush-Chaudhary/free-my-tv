@@ -618,8 +618,9 @@ final class Recs {
     }
 
     private boolean needsLink(Pick p) {
-        return linksOn() && p.pkg != null && p.link == null
-                && cache.getString(linkKey(p), null) == null && System.currentTimeMillis() >= linkRetryAt;
+        if (p.pkg == null || p.link != null || System.currentTimeMillis() < linkRetryAt) return false;
+        if (linksOn()) return cache.getString(linkKey(p), null) == null;
+        return wikidataService(p) && cache.getString(wikidataKey(p), null) == null;
     }
 
     /** A key is set and Watchmode hasn't refused it (a refused key isn't tried again until it changes). */
@@ -630,7 +631,11 @@ final class Recs {
 
     /** Sets p.link from what was looked up before, or looks it up (2 requests of the free plan's 2,500 a month). */
     private void findLink(Pick p) {
-        if (!linksOn() || p.pkg == null || p.link != null) return;
+        if (p.pkg == null || p.link != null) return;
+        if (!linksOn()) {
+            if (wikidataService(p)) findWikidataLink(p);
+            return;
+        }
         String saved = cache.getString(linkKey(p), null);
         if (saved != null) {
             p.link = saved.isEmpty() ? null : saved;
@@ -662,6 +667,74 @@ final class Recs {
             linkRetryAt = System.currentTimeMillis() + 10 * 60_000L;   // quota or network: not again right away
             AppLog.w("watchmode: " + e.getMessage());
         }
+    }
+
+    // MARK: - Wikidata (without a Watchmode key: Netflix, Disney+ and Prime Video ids by TMDB id, no key needed)
+    // From the streaming edition of Free My TV (github.com/javiermiz/free-my-tv, MIT), which opens these three this way.
+
+    private static boolean wikidataService(Pick p) {
+        return "netflix".equals(p.app) || "disney".equals(p.app) || "prime".equals(p.app);
+    }
+
+    private static String wikidataKey(Pick p) {
+        return "wd:" + p.kind + p.id + p.app;
+    }
+
+    // The ids end up in a URL the app opens: only their own shapes get through.
+    private static final java.util.regex.Pattern NETFLIX_ID = java.util.regex.Pattern.compile("\\d{4,12}"),
+            DISNEY_ID = java.util.regex.Pattern.compile("[A-Za-z0-9-]{4,40}"),
+            PRIME_ID = java.util.regex.Pattern.compile("[A-Za-z0-9.-]{6,64}");
+
+    /** Sets p.link to the title's page in its app from Wikidata, remembered per title ("" = Wikidata has no id). */
+    private void findWikidataLink(Pick p) {
+        String saved = cache.getString(wikidataKey(p), null);
+        if (saved != null) {
+            p.link = saved.isEmpty() ? null : saved;
+            return;
+        }
+        if (System.currentTimeMillis() < linkRetryAt) return;
+        boolean movie = "movie".equals(p.kind);
+        String query = "SELECT ?nf ?dm ?ds ?pv WHERE { ?i wdt:" + (movie ? "P4947" : "P4983") + " \"" + p.id + "\" ."
+                + " OPTIONAL { ?i wdt:P1874 ?nf } OPTIONAL { ?i wdt:P7595 ?dm } OPTIONAL { ?i wdt:P7596 ?ds }"
+                + " OPTIONAL { ?i wdt:P8055 ?pv } } LIMIT 1";
+        try {
+            HttpURLConnection c = (HttpURLConnection) new URL("https://query.wikidata.org/sparql?format=json&query="
+                    + URLEncoder.encode(query, "UTF-8")).openConnection();
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(15000);
+            c.setRequestProperty("Accept", "application/sparql-results+json");
+            c.setRequestProperty("User-Agent", "FreeMyTV/1.1 (home screen; github.com/simbasjungles/free-my-tv)");
+            JSONArray rows;
+            try {
+                if (c.getResponseCode() != 200) throw new IOException("Wikidata returned HTTP " + c.getResponseCode());
+                rows = new JSONObject(read(c.getInputStream())).getJSONObject("results").getJSONArray("bindings");
+            } finally {
+                c.disconnect();
+            }
+            String link = "";
+            if (rows.length() > 0) {
+                JSONObject b = rows.getJSONObject(0);
+                String nf = binding(b, "nf"), disney = binding(b, movie ? "dm" : "ds"), prime = binding(b, "pv");
+                if ("netflix".equals(p.app) && nf != null && NETFLIX_ID.matcher(nf).matches()) {
+                    link = "https://www.netflix.com/title/" + nf;
+                } else if ("disney".equals(p.app) && disney != null && DISNEY_ID.matcher(disney).matches()) {
+                    link = "https://www.disneyplus.com/" + (movie ? "movies" : "series") + "/x/" + disney;
+                } else if ("prime".equals(p.app) && prime != null && PRIME_ID.matcher(prime).matches()) {
+                    link = "https://app.primevideo.com/detail?asin=" + prime;
+                }
+            }
+            cache.edit().putString(wikidataKey(p), link).apply();
+            p.link = link.isEmpty() ? null : link;
+            AppLog.w("wikidata: “" + p.title + "” " + (link.isEmpty() ? "has no " + p.app + " id" : "→ " + link));
+        } catch (Exception e) {
+            linkRetryAt = System.currentTimeMillis() + 10 * 60_000L;   // network or rate limit: not again right away
+            AppLog.w("wikidata: " + e.getMessage());
+        }
+    }
+
+    private static String binding(JSONObject b, String name) {
+        JSONObject v = b.optJSONObject(name);
+        return v == null ? null : v.optString("value", null);
     }
 
     private static String watchmode(String path) throws IOException {

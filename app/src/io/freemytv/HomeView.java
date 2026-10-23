@@ -423,7 +423,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     void resume() {
         if (running) return;
         running = true;
-        if (web != null) web.onResume();
         checkNight(false);
         long now = SystemClock.uptimeMillis();
         // Some remotes (Xiaomi's) send one Home press as a burst of 5 to 8, and each one pauses and resumes the home
@@ -454,8 +453,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     void pause() {
         if (!running) return;
         running = false;
-        stopTrailer();
-        if (web != null) web.onPause();     // no video or timers while an app is in front
+        stopTrailer();      // the player goes to sleep, then away, while an app is in front
         cancelReorder(true);
         handler.removeCallbacks(holdStart);
         okHeld = holdArmed = false;
@@ -471,7 +469,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         pause();
         if (launcherApps != null) launcherApps.unregisterCallback(packages);
         click.release();
-        if (web != null) web.destroy();
+        handler.removeCallbacks(sleepPlayer);
+        handler.removeCallbacks(releasePlayer);
+        if (web != null) {
+            if (playerAsleep) web.resumeTimers();
+            web.destroy();
+        }
     }
 
     /** Starting state (Home pressed while the home screen is showing): first app focused, drawer and sheet closed. */
@@ -1802,11 +1805,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             Recs.Pick now = trailerPick();
             if (id == null || !YOUTUBE_ID.matcher(id).matches() || now == null || !Recs.key(now).equals(trailerFor)) return;
             ensurePlayer();
+            wakePlayer();
             AppLog.w("trailer " + id + " for “" + p.title + "”");
             trailerKey = id;
             placeTrailer();
             float d = getResources().getDisplayMetrics().density;
-            String call = String.format(java.util.Locale.US, "play('%s',%.1f,%.1f)", id, trailerRect.width() / d, trailerRect.height() / d);
+            String call = String.format(java.util.Locale.US, "play('%s',%.1f)", id, trailerRadius / d);
             if (pageReady) web.evaluateJavascript(call, null);
             else pendingCall = call;    // the first trailer can come before the page has loaded
         });
@@ -1825,6 +1829,47 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             trailerBox.animate().cancel();
             trailerBox.setAlpha(0);
         }
+        // Stopped, YouTube's page still kept a CPU core busy (measured on a TCL G10): asleep a moment after stop() has
+        // run, and gone (with its renderer process and ~75 MB) if no other trailer comes soon.
+        // Counted from the last trailer, not from the last focus change (every move off the row comes through here).
+        if (web != null && !releasePending) {
+            handler.postDelayed(sleepPlayer, 500);
+            handler.postDelayed(releasePlayer, PLAYER_IDLE);
+            releasePending = true;
+        }
+    }
+
+    private boolean releasePending;
+
+    private static final long PLAYER_IDLE = 30_000;
+    private boolean playerAsleep;
+    private final Runnable sleepPlayer = () -> {
+        if (web == null || trailerKey != null || playerAsleep) return;
+        web.onPause();
+        web.pauseTimers();
+        playerAsleep = true;
+    };
+    private final Runnable releasePlayer = () -> {
+        releasePending = false;
+        if (web == null || trailerKey != null) return;
+        if (playerAsleep) web.resumeTimers();   // the timers are the process's, not this view's: back on before it goes
+        removeView(trailerBox);
+        web.destroy();
+        web = null;
+        trailerBox = null;
+        pageReady = false;
+        playerAsleep = false;
+        AppLog.w("trailer player released");
+    };
+
+    private void wakePlayer() {
+        handler.removeCallbacks(sleepPlayer);
+        handler.removeCallbacks(releasePlayer);
+        releasePending = false;
+        if (!playerAsleep) return;
+        web.onResume();
+        web.resumeTimers();
+        playerAsleep = false;
     }
 
     /** Over the selected card as drawLightCard draws it focused (grown 5% and lifted), with its rounded corners. */
@@ -1834,7 +1879,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         trailerRect.set(cx - base.width() * s / 2, cy - base.height() * s / 2, cx + base.width() * s / 2, cy + base.height() * s / 2);
         trailerRadius = 18 * k * s;
         layoutTrailer();
-        trailerBox.invalidateOutline();
     }
 
     private void layoutTrailer() {
@@ -1850,14 +1894,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         trailerBox = new FrameLayout(getContext());
         trailerBox.setAlpha(0);
         trailerBox.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
-        trailerBox.setOutlineProvider(new android.view.ViewOutlineProvider() {
-            @Override public void getOutline(View v, android.graphics.Outline o) {
-                o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), trailerRadius);
-            }
-        });
-        trailerBox.setClipToOutline(true);
+        // The rounded corners are the page's (CSS), on a transparent WebView: clipping the view to an outline instead
+        // made the app redraw every video frame itself, about a CPU core on a TCL G10 (97% → 20% without it).
         web = new WebView(getContext());
-        web.setBackgroundColor(0xFF000000);
+        web.setBackgroundColor(0x00000000);
         web.setFocusable(false);
         web.setFocusableInTouchMode(false);
         WebSettings ws = web.getSettings();
@@ -1885,26 +1925,28 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     /**
-     * YouTube's player, muted and without controls, covering the card like a photo (cropped at 16:9). It reports back
+     * YouTube's player, at 60% volume and without controls, covering the card like a photo (cropped at 16:9). It reports back
      * when the video really plays, so the card shows the photo until then, and when it ends or fails.
      * Adapted from the streaming edition of Free My TV (github.com/javiermiz/free-my-tv, MIT).
      */
     private static final String PLAYER = "<!doctype html><html><head>"
-            + "<style>html,body{margin:0;width:100%;height:100%;background:#000;overflow:hidden}#p{position:absolute;border:0}</style>"
+            + "<style>html{background:transparent}body{margin:0;width:100%;height:100%;background:#000;overflow:hidden}"
+            + "#p{position:absolute;border:0}</style>"
             + "</head><body><div id=p></div><script src='https://www.youtube.com/iframe_api'></script><script>"
             + "var player=null,ready=false,pending=null;addEventListener('resize',fit);"
             + "function fit(){var vv=window.visualViewport,W=vv?vv.width:innerWidth,H=vv?vv.height:innerHeight,"
             + "vw=Math.max(W,H*16/9),vh=vw*9/16,f=document.getElementById('p');if(!f)return;"
             + "f.style.width=vw+'px';f.style.height=vh+'px';f.style.left=((W-vw)/2)+'px';f.style.top=((H-vh)/2)+'px';}"
             + "function onYouTubeIframeAPIReady(){ready=true;if(pending){var a=pending;pending=null;play.apply(null,a);}}"
-            + "function play(k,w,h){if(!ready){pending=[k,w,h];return;}fit();setTimeout(fit,300);"
-            + "if(!player){player=new YT.Player('p',{videoId:k,playerVars:{autoplay:1,mute:1,controls:0,disablekb:1,fs:0,rel:0,"
+            + "function play(k,r){document.body.style.borderRadius=r+'px';if(!ready){pending=[k,r];return;}fit();setTimeout(fit,300);"
+            + "function sound(p){p.unMute();p.setVolume(60);}"
+            + "if(!player){player=new YT.Player('p',{videoId:k,playerVars:{autoplay:1,controls:0,disablekb:1,fs:0,rel:0,"
             + "playsinline:1,iv_load_policy:3},events:{"
-            + "onReady:function(e){fit();e.target.mute();e.target.playVideo();},"
+            + "onReady:function(e){fit();sound(e.target);e.target.playVideo();},"
             + "onStateChange:function(e){var id=(player&&player.getVideoData)?player.getVideoData().video_id:'';"
             + "if(e.data==1)FreeMyTV.playing(id);if(e.data==0)FreeMyTV.ended(id);},"
             + "onError:function(e){FreeMyTV.failed();}}});}"
-            + "else{player.mute();player.loadVideoById(k);}}"
+            + "else{player.loadVideoById(k);sound(player);}}"
             + "function stop(){pending=null;if(player&&player.stopVideo)player.stopVideo();}</script></body></html>";
 
     private final class TrailerBridge {
