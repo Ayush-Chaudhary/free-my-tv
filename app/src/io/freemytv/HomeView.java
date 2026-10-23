@@ -1790,7 +1790,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private String trailerFor, trailerKey;  // the pick it's for (Recs.key) and the YouTube id loaded
     private final RectF trailerRect = new RectF();   // where it pops out to: 16:9, in the middle of the screen
     private final RectF cardAt = new RectF();        // the focused card it starts in and shrinks back into
-    private float trailerRadius;
     /** Dims what's behind the popped trailer (and blurs it from Android 12, where views take a RenderEffect). */
     private View trailerScrim;
     /** The popped trailer's title, details and two lines about it, under the window (fades with the scrim). */
@@ -1838,7 +1837,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             AppLog.w("trailer " + id + " for “" + p.title + "”");
             trailerKey = id;
             placeTrailer();
-            float d = getResources().getDisplayMetrics().density;
             String call = String.format(java.util.Locale.US, "play('%s',%.2f,%.1f)", id, cardInset(), cardRadiusCss());
             if (pageReady) web.evaluateJavascript(call, null);
             else pendingCall = call;    // the first trailer can come before the page has loaded
@@ -1930,7 +1928,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         cardAt.set(cx - base.width() * s / 2, cy - base.height() * s / 2, cx + base.width() * s / 2, cy + base.height() * s / 2);
         float pw = POP_W * k, ph = pw * 9 / 16;
         trailerRect.set((w - pw) / 2, POP_TOP * k, (w + pw) / 2, POP_TOP * k + ph);
-        trailerRadius = 26 * k;
         layoutTrailer();
         trailerBox.setPivotX(pw / 2);
         trailerBox.setPivotY(ph / 2);
@@ -1962,8 +1959,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         popPick = trailerPick();
         popAboutLayout = null;
         trailerInfo.invalidate();
-        float d = getResources().getDisplayMetrics().density;
-        web.evaluateJavascript(String.format(java.util.Locale.US, "shape(0,%.1f,%d)", trailerRadius / d, POP_MS), null);
+        web.evaluateJavascript("shape(0,0," + POP_MS + ")", null);   // square corners once out: see PLAYER
         trailerBox.animate().scaleX(1).scaleY(1).translationX(0).translationY(0).alpha(1)
                 .setDuration(POP_MS).setInterpolator(POP_EASE).start();
         animateBackdrop(1, POP_MS);
@@ -2109,7 +2105,10 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             + "function onYouTubeIframeAPIReady(){ready=true;if(pending){var a=pending;pending=null;play.apply(null,a);}}"
             + "function shape(i,r,ms){var c=document.getElementById('c');"
             + "c.style.transition=ms?'clip-path '+ms+'ms " + POP_CSS_EASE + "':'none';"
-            + "c.style.clipPath='inset('+i+'% 0 round '+r+'px)';}"
+            + "c.ontransitionend=null;c.style.clipPath='inset('+i+'% 0 round '+r+'px)';"
+            // Uncropped, no clip at all: any mask on the video (rounded corners too) makes the WebView draw every
+            // frame through the app, about 4 frames a second on a TCL G10, instead of handing it to the TV's video overlay.
+            + "if(i==0&&ms)c.ontransitionend=function(){c.ontransitionend=null;c.style.clipPath='none';};}"
             + "function play(k,i,r){shape(i,r,0);if(!ready){pending=[k,i,r];return;}fit();setTimeout(fit,300);"
             + "function sound(p){p.unMute();p.setVolume(100);try{p.unloadModule('captions');p.unloadModule('cc');}catch(e){}}"
             + "if(!player){player=new YT.Player('p',{videoId:k,playerVars:{autoplay:1,controls:0,disablekb:1,fs:0,rel:0,"

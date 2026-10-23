@@ -414,6 +414,22 @@ final class HomeApps {
                 if (intent != null && it.uri != null) {
                     intent = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(it.uri)).addCategory(Intent.CATEGORY_BROWSABLE).setPackage(it.pkg);
                     AppLog.w("opening " + it.label + " at " + it.uri);
+                    // Netflix (tested on a TCL G10) only follows a title link on a fresh start: running in the background,
+                    // it comes forward on its home page and drops the link (killBackgroundProcesses leaves it alone there).
+                    // So the app is stopped first, over the TV's own ADB, and opened once that's done. Without ADB (network
+                    // debugging off) it opens as it is.
+                    final Intent link = intent, home = plain;
+                    STOPPER.execute(() -> {
+                        if (PACKAGE.matcher(it.pkg).matches()) {
+                            try (Adb adb = Adb.connect(a.getApplicationContext(), 3000, null)) {
+                                adb.shell("am force-stop " + it.pkg);
+                            } catch (Exception e) {
+                                AppLog.w("couldn't restart " + it.label + " for its link: " + e.getMessage());
+                            }
+                        }
+                        a.runOnUiThread(() -> start(a, it, link, home, from, x, y, w, h));
+                    });
+                    return true;
                 }
                 break;
             case LIVE_TV:
@@ -432,6 +448,14 @@ final class HomeApps {
                 return false;
         }
         if (intent == null) return false;
+        return start(a, it, intent, plain, from, x, y, w, h);
+    }
+
+    private static final java.util.concurrent.ExecutorService STOPPER = java.util.concurrent.Executors.newSingleThreadExecutor();
+    /** A package name, before it goes into a shell command. */
+    private static final java.util.regex.Pattern PACKAGE = java.util.regex.Pattern.compile("[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)+");
+
+    private static boolean start(Activity a, Item it, Intent intent, Intent plain, View from, int x, int y, int w, int h) {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         try {
             a.startActivity(intent, ActivityOptions.makeScaleUpAnimation(from, x, y, Math.max(w, 1), Math.max(h, 1)).toBundle());
