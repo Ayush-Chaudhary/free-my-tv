@@ -567,6 +567,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         measure(sheetLayer, width, height);
         measure(toastLayer, Math.round(1000 * kk), Math.round(220 * kk));
         if (trailerScrim != null) measure(trailerScrim, width, height);
+        if (trailerInfo != null) measure(trailerInfo, width, height);
         if (trailerBox != null) measure(trailerBox, Math.round(trailerRect.width()), Math.round(trailerRect.height()));
         setMeasuredDimension(width, height);
     }
@@ -589,6 +590,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         sheetLayer.setPivotY(height / 2f);
         place(toastLayer, (width - toastLayer.getMeasuredWidth()) / 2, 0);
         if (trailerScrim != null) trailerScrim.layout(0, 0, width, height);
+        if (trailerInfo != null) trailerInfo.layout(0, 0, width, height);
         layoutTrailer();
     }
 
@@ -1791,10 +1793,16 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private float trailerRadius;
     /** Dims what's behind the popped trailer (and blurs it from Android 12, where views take a RenderEffect). */
     private View trailerScrim;
+    /** The popped trailer's title, details and two lines about it, under the window (fades with the scrim). */
+    private View trailerInfo;
+    private Recs.Pick popPick;
+    private Paint popTitle, popMeta;
+    private TextPaint popAbout;
+    private StaticLayout popAboutLayout;
     private boolean popped;
     private float backdropLevel;
     private ValueAnimator backdropAnim;
-    private static final float POP_W = 1360, POP_DIM = 0.55f, POP_BLUR = 28;
+    private static final float POP_W = 1200, POP_TOP = 96, POP_DIM = 0.6f, POP_BLUR = 28;
     private static final long POP_MS = 520, POP_AFTER = 900;
     /** Apple's ease: quick out of the start, a long soft landing. The page's crop uses the same curve. */
     private static final PathInterpolator POP_EASE = new PathInterpolator(0.32f, 0.72f, 0f, 1f);
@@ -1890,10 +1898,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (playerAsleep) web.resumeTimers();   // the timers are the process's, not this view's: back on before it goes
         removeView(trailerBox);
         removeView(trailerScrim);
+        removeView(trailerInfo);
         web.destroy();
         web = null;
         trailerBox = null;
         trailerScrim = null;
+        trailerInfo = null;
         pageReady = false;
         playerAsleep = false;
         AppLog.w("trailer player released");
@@ -1919,7 +1929,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         float s = 1.05f, cx = base.centerX(), cy = base.centerY() - 6 * k;
         cardAt.set(cx - base.width() * s / 2, cy - base.height() * s / 2, cx + base.width() * s / 2, cy + base.height() * s / 2);
         float pw = POP_W * k, ph = pw * 9 / 16;
-        trailerRect.set((w - pw) / 2, (h - ph) / 2, (w + pw) / 2, (h + ph) / 2);
+        trailerRect.set((w - pw) / 2, POP_TOP * k, (w + pw) / 2, POP_TOP * k + ph);
         trailerRadius = 26 * k;
         layoutTrailer();
         trailerBox.setPivotX(pw / 2);
@@ -1945,10 +1955,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         return 18 * k * 1.05f / cardScale() / getResources().getDisplayMetrics().density;
     }
 
-    /** Out of the card to the middle of the screen, the whole trailer uncropped, everything behind it dimmed. */
+    /** Out of the card to the top middle of the screen, the whole trailer uncropped, its details under it, the rest dimmed. */
     private void popTrailer() {
         if (trailerBox == null || trailerKey == null || !running) return;
         popped = true;
+        popPick = trailerPick();
+        popAboutLayout = null;
+        trailerInfo.invalidate();
         float d = getResources().getDisplayMetrics().density;
         web.evaluateJavascript(String.format(java.util.Locale.US, "shape(0,%.1f,%d)", trailerRadius / d, POP_MS), null);
         trailerBox.animate().scaleX(1).scaleY(1).translationX(0).translationY(0).alpha(1)
@@ -1980,6 +1993,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private void setBackdrop(float level) {
         backdropLevel = level;
         if (trailerScrim != null) trailerScrim.setAlpha(POP_DIM * level);
+        if (trailerInfo != null) trailerInfo.setAlpha(level);
         if (Build.VERSION.SDK_INT < 31) return;
         // In steps of 2 px: a new RenderEffect only when the blur visibly changes, not on every frame.
         int step = Math.round(POP_BLUR * k * level / 2);
@@ -1987,6 +2001,39 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         blurStep = step;
         RenderEffect blur = step == 0 ? null : RenderEffect.createBlurEffect(step * 2f, step * 2f, Shader.TileMode.CLAMP);
         for (View v : new View[] {heroLayer, status, platter, tiles}) v.setRenderEffect(blur);
+    }
+
+    /** Light text whatever the theme: it sits on the dimmed home screen. */
+    private void drawTrailerInfo(Canvas c) {
+        Recs.Pick p = popPick;
+        if (p == null) return;
+        if (popTitle == null) {
+            popTitle = Ui.text(Ui.semibold, 34 * k, WHITE);
+            popMeta = Ui.text(Ui.medium, 25 * k, 0xFFB4B4BA);
+            popAbout = new TextPaint(Ui.text(Ui.regular, 24 * k, 0xFFD6D6DC));
+        }
+        float left = trailerRect.left, width = trailerRect.width(), y = trailerRect.bottom + 54 * k;
+        fitPaint.set(popTitle);
+        c.drawText(TextUtils.ellipsize(p.title, fitPaint, width, TextUtils.TruncateAt.END).toString(), left, y, popTitle);
+        if (p.meta != null && !p.meta.isEmpty()) {
+            y += 38 * k;
+            fitPaint.set(popMeta);
+            c.drawText(TextUtils.ellipsize(p.meta, fitPaint, width, TextUtils.TruncateAt.END).toString(), left, y, popMeta);
+        }
+        if (p.overview != null && !p.overview.isEmpty()) {
+            if (popAboutLayout == null) {
+                popAboutLayout = StaticLayout.Builder.obtain(p.overview, 0, p.overview.length(), popAbout, Math.max(1, Math.round(width)))
+                        .setMaxLines(2)
+                        .setEllipsize(TextUtils.TruncateAt.END)
+                        .setLineSpacing(5 * k, 1)
+                        .setIncludePad(false)
+                        .build();
+            }
+            c.save();
+            c.translate(left, y + 20 * k);
+            popAboutLayout.draw(c);
+            c.restore();
+        }
     }
 
     private void layoutTrailer() {
@@ -2033,8 +2080,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         trailerScrim.setAlpha(0);
         trailerScrim.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
         // Over the row and the shelf (it pops out over both), under the drawer, the sheet and the toasts.
+        trailerInfo = new View(getContext()) {
+            @Override protected void onDraw(Canvas c) { drawTrailerInfo(c); }
+        };
+        trailerInfo.setAlpha(0);
+        trailerInfo.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
         addView(trailerScrim, indexOfChild(tiles) + 1);
-        addView(trailerBox, indexOfChild(trailerScrim) + 1);
+        addView(trailerInfo, indexOfChild(trailerScrim) + 1);
+        addView(trailerBox, indexOfChild(trailerInfo) + 1);
         web.loadDataWithBaseURL("https://freemytv.io/", PLAYER, "text/html", "utf-8", null);
     }
 
