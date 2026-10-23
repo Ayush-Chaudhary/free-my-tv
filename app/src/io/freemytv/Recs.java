@@ -678,6 +678,68 @@ final class Recs {
         }
     }
 
+    // MARK: - Trailers: the muted preview on the selected card
+
+    private final ExecutorService videos = Executors.newSingleThreadExecutor();   // apart from the images' queue
+    private final Map<String, String> trailers = new HashMap<>();   // pick key → YouTube id ("" = none)
+    private static final List<String> TRAILER_TYPES = Arrays.asList("Trailer", "Teaser");
+
+    interface TrailerFound { void found(String youtubeId); }
+
+    /**
+     * The pick's trailer on YouTube, or null without one; `done` runs on the main thread. Looked up once per title (a
+     * failed lookup isn't remembered, so it's tried again next time).
+     */
+    void trailer(Pick p, TrailerFound done) {
+        final String k = key(p);
+        synchronized (trailers) {
+            String id = trailers.get(k);
+            if (id != null) {
+                done.found(id.isEmpty() ? null : id);
+                return;
+            }
+        }
+        videos.execute(() -> {
+            String id;
+            try {
+                id = youtubeTrailer(p);
+            } catch (IOException | org.json.JSONException e) {
+                AppLog.w("trailer for “" + p.title + "”: " + e.getMessage());
+                main.post(() -> done.found(null));
+                return;
+            }
+            synchronized (trailers) { trailers.put(k, id); }
+            main.post(() -> done.found(id.isEmpty() ? null : id));
+        });
+    }
+
+    /**
+     * TMDB's best YouTube trailer (a teaser if there's none): your language first, then English or none, official and
+     * your country breaking ties; a show without any: its first season's. "" when there is none.
+     */
+    private String youtubeTrailer(Pick p) throws IOException, org.json.JSONException {
+        String mine = Ui.language.replaceAll("-.*", "");
+        String base = "/" + p.kind + "/" + p.id;
+        for (String where : p.kind.equals("tv") ? new String[] {base, base + "/season/1"} : new String[] {base}) {
+            JSONArray v = get(where + "/videos?include_video_language=" + mine + ",en,null").getJSONArray("results");
+            String found = "";
+            int best = -1;
+            for (int i = 0; i < v.length(); i++) {
+                JSONObject o = v.getJSONObject(i);
+                int rank = TRAILER_TYPES.indexOf(o.optString("type"));
+                if (!"YouTube".equals(o.optString("site")) || rank < 0) continue;
+                int score = (TRAILER_TYPES.size() - rank) * 8 + (mine.equals(o.optString("iso_639_1")) ? 4 : 0)
+                        + (o.optBoolean("official") ? 2 : 0) + (REGION.equals(o.optString("iso_3166_1")) ? 1 : 0);
+                if (score > best) {
+                    best = score;
+                    found = o.optString("key");
+                }
+            }
+            if (!found.isEmpty()) return found;
+        }
+        return "";
+    }
+
     private JSONObject get(String path) throws IOException, org.json.JSONException {
         String key = readKey();
         if (key == null) throw new IOException("no TMDB key");

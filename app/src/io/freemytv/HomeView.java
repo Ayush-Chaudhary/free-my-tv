@@ -32,6 +32,10 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityManager;
 import android.view.accessibility.AccessibilityNodeProvider;
+import android.webkit.JavascriptInterface;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.widget.FrameLayout;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -419,6 +423,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     void resume() {
         if (running) return;
         running = true;
+        if (web != null) web.onResume();
         checkNight(false);
         long now = SystemClock.uptimeMillis();
         // Some remotes (Xiaomi's) send one Home press as a burst of 5 to 8, and each one pauses and resumes the home
@@ -449,6 +454,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     void pause() {
         if (!running) return;
         running = false;
+        stopTrailer();
+        if (web != null) web.onPause();     // no video or timers while an app is in front
         cancelReorder(true);
         handler.removeCallbacks(holdStart);
         okHeld = holdArmed = false;
@@ -464,6 +471,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         pause();
         if (launcherApps != null) launcherApps.unregisterCallback(packages);
         click.release();
+        if (web != null) web.destroy();
     }
 
     /** Starting state (Home pressed while the home screen is showing): first app focused, drawer and sheet closed. */
@@ -550,6 +558,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         measure(drawerLayer, width, Math.round(600 * kk));
         measure(sheetLayer, width, height);
         measure(toastLayer, Math.round(1000 * kk), Math.round(220 * kk));
+        if (trailerBox != null) measure(trailerBox, Math.round(trailerRect.width()), Math.round(trailerRect.height()));
         setMeasuredDimension(width, height);
     }
 
@@ -570,6 +579,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         sheetLayer.setPivotX(width / 2f);
         sheetLayer.setPivotY(height / 2f);
         place(toastLayer, (width - toastLayer.getMeasuredWidth()) / 2, 0);
+        layoutTrailer();
     }
 
     private static void place(View v, int x, int y) {
@@ -1753,9 +1763,185 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         heroDirty |= snap || heroChanged;
         drawerDirty |= snap || drawerChanged;
         spoken.focusMoved();
+        scheduleTrailer();
     }
 
-    /** Aims a group's springs (only `focused` at 1); returns true if any target changed. */
+    // MARK: - Trailer preview: a muted YouTube trailer in the selected card, after a short rest on it
+
+    private static final long TRAILER_DELAY = 1500;
+    /** YouTube ids only: the id comes from TMDB and goes into a JavaScript call. */
+    private static final java.util.regex.Pattern YOUTUBE_ID = java.util.regex.Pattern.compile("[A-Za-z0-9_-]{6,20}");
+    private FrameLayout trailerBox;     // made on the first trailer: a WebView costs memory a TV without picks never needs
+    private WebView web;
+    private String trailerFor, trailerKey;  // the pick it's for (Recs.key) and the YouTube id loaded
+    private final RectF trailerRect = new RectF();
+    private float trailerRadius;
+    private final Runnable trailerStart = this::startTrailer;
+
+    /** The pick whose trailer may play: the selected card while it has focus and nothing covers the row. */
+    private Recs.Pick trailerPick() {
+        if (!running || sheetOpen || drawerOpen || zone != Z_CARDS || cardIndex >= cards.size()) return null;
+        return cards.get(cardIndex);
+    }
+
+    /** Called on every focus change: a new card stops the trailer and waits for a rest; the same card changes nothing. */
+    private void scheduleTrailer() {
+        Recs.Pick p = trailerPick();
+        String want = p == null ? null : Recs.key(p);
+        if (want != null && want.equals(trailerFor)) return;
+        stopTrailer();
+        trailerFor = want;
+        if (p != null) handler.postDelayed(trailerStart, TRAILER_DELAY);
+    }
+
+    private void startTrailer() {
+        Recs.Pick p = trailerPick();
+        if (p == null || !Recs.key(p).equals(trailerFor)) return;
+        recs.trailer(p, id -> {
+            if (id == null) AppLog.w("no trailer for “" + p.title + "”");
+            Recs.Pick now = trailerPick();
+            if (id == null || !YOUTUBE_ID.matcher(id).matches() || now == null || !Recs.key(now).equals(trailerFor)) return;
+            ensurePlayer();
+            AppLog.w("trailer " + id + " for “" + p.title + "”");
+            trailerKey = id;
+            placeTrailer();
+            float d = getResources().getDisplayMetrics().density;
+            String call = String.format(java.util.Locale.US, "play('%s',%.1f,%.1f)", id, trailerRect.width() / d, trailerRect.height() / d);
+            if (pageReady) web.evaluateJavascript(call, null);
+            else pendingCall = call;    // the first trailer can come before the page has loaded
+        });
+    }
+
+    private boolean pageReady;
+    private String pendingCall;
+
+    private void stopTrailer() {
+        handler.removeCallbacks(trailerStart);
+        trailerFor = null;
+        pendingCall = null;
+        if (trailerKey != null && web != null) web.evaluateJavascript("stop()", null);
+        trailerKey = null;
+        if (trailerBox != null) {
+            trailerBox.animate().cancel();
+            trailerBox.setAlpha(0);
+        }
+    }
+
+    /** Over the selected card as drawLightCard draws it focused (grown 5% and lifted), with its rounded corners. */
+    private void placeTrailer() {
+        RectF base = cardRects[cardIndex];
+        float s = 1.05f, cx = base.centerX(), cy = base.centerY() - 6 * k;
+        trailerRect.set(cx - base.width() * s / 2, cy - base.height() * s / 2, cx + base.width() * s / 2, cy + base.height() * s / 2);
+        trailerRadius = 18 * k * s;
+        layoutTrailer();
+        trailerBox.invalidateOutline();
+    }
+
+    private void layoutTrailer() {
+        if (trailerBox == null) return;
+        measure(trailerBox, Math.round(trailerRect.width()), Math.round(trailerRect.height()));
+        trailerBox.layout(Math.round(trailerRect.left), Math.round(trailerRect.top),
+                Math.round(trailerRect.left) + trailerBox.getMeasuredWidth(), Math.round(trailerRect.top) + trailerBox.getMeasuredHeight());
+    }
+
+    /** The player page, loaded once and kept: each trailer only swaps the video. Above the row, under the drawer. */
+    private void ensurePlayer() {
+        if (web != null) return;
+        trailerBox = new FrameLayout(getContext());
+        trailerBox.setAlpha(0);
+        trailerBox.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        trailerBox.setOutlineProvider(new android.view.ViewOutlineProvider() {
+            @Override public void getOutline(View v, android.graphics.Outline o) {
+                o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), trailerRadius);
+            }
+        });
+        trailerBox.setClipToOutline(true);
+        web = new WebView(getContext());
+        web.setBackgroundColor(0xFF000000);
+        web.setFocusable(false);
+        web.setFocusableInTouchMode(false);
+        WebSettings ws = web.getSettings();
+        ws.setJavaScriptEnabled(true);
+        ws.setMediaPlaybackRequiresUserGesture(false);
+        web.addJavascriptInterface(new TrailerBridge(), "FreeMyTV");
+        web.setWebViewClient(new android.webkit.WebViewClient() {
+            @Override public void onPageFinished(WebView v, String url) {
+                pageReady = true;
+                if (pendingCall != null) v.evaluateJavascript(pendingCall, null);
+                pendingCall = null;
+            }
+        });
+        web.setWebChromeClient(new android.webkit.WebChromeClient() {
+            @Override public boolean onConsoleMessage(android.webkit.ConsoleMessage m) {
+                // YouTube's own ad tracking fails CORS on every video: noise, not a problem with the trailer.
+                if (m.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR && !m.message().contains("CORS"))
+                    AppLog.w("trailer page: " + m.message());
+                return true;
+            }
+        });
+        trailerBox.addView(web, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        addView(trailerBox, indexOfChild(heroLayer) + 1);
+        web.loadDataWithBaseURL("https://freemytv.io/", PLAYER, "text/html", "utf-8", null);
+    }
+
+    /**
+     * YouTube's player, muted and without controls, covering the card like a photo (cropped at 16:9). It reports back
+     * when the video really plays, so the card shows the photo until then, and when it ends or fails.
+     * Adapted from the streaming edition of Free My TV (github.com/javiermiz/free-my-tv, MIT).
+     */
+    private static final String PLAYER = "<!doctype html><html><head>"
+            + "<style>html,body{margin:0;width:100%;height:100%;background:#000;overflow:hidden}#p{position:absolute;border:0}</style>"
+            + "</head><body><div id=p></div><script src='https://www.youtube.com/iframe_api'></script><script>"
+            + "var player=null,ready=false,pending=null;addEventListener('resize',fit);"
+            + "function fit(){var vv=window.visualViewport,W=vv?vv.width:innerWidth,H=vv?vv.height:innerHeight,"
+            + "vw=Math.max(W,H*16/9),vh=vw*9/16,f=document.getElementById('p');if(!f)return;"
+            + "f.style.width=vw+'px';f.style.height=vh+'px';f.style.left=((W-vw)/2)+'px';f.style.top=((H-vh)/2)+'px';}"
+            + "function onYouTubeIframeAPIReady(){ready=true;if(pending){var a=pending;pending=null;play.apply(null,a);}}"
+            + "function play(k,w,h){if(!ready){pending=[k,w,h];return;}fit();setTimeout(fit,300);"
+            + "if(!player){player=new YT.Player('p',{videoId:k,playerVars:{autoplay:1,mute:1,controls:0,disablekb:1,fs:0,rel:0,"
+            + "playsinline:1,iv_load_policy:3},events:{"
+            + "onReady:function(e){fit();e.target.mute();e.target.playVideo();},"
+            + "onStateChange:function(e){var id=(player&&player.getVideoData)?player.getVideoData().video_id:'';"
+            + "if(e.data==1)FreeMyTV.playing(id);if(e.data==0)FreeMyTV.ended(id);},"
+            + "onError:function(e){FreeMyTV.failed();}}});}"
+            + "else{player.mute();player.loadVideoById(k);}}"
+            + "function stop(){pending=null;if(player&&player.stopVideo)player.stopVideo();}</script></body></html>";
+
+    private final class TrailerBridge {
+        /** Shown only if it's this card's video (a late event from the last one must not show it here). */
+        @JavascriptInterface public void playing(String id) {
+            handler.post(() -> {
+                if (trailerKey == null || !trailerKey.equals(id)) return;
+                // A moment later: YouTube flashes its own overlay as it starts.
+                handler.postDelayed(() -> {
+                    if (!id.equals(trailerKey) || trailerBox.getAlpha() >= 1) return;
+                    AppLog.w("trailer on " + id);
+                    trailerBox.animate().alpha(1).setDuration(500).start();
+                }, 700);
+            });
+        }
+
+        /** The trailer ended or couldn't play: the photo comes back. */
+        @JavascriptInterface public void ended(String id) {
+            handler.post(() -> {
+                if (trailerKey == null || !trailerKey.equals(id)) return;
+                String keep = trailerFor;
+                stopTrailer();
+                trailerFor = keep;      // ended on this card: don't start it again until the focus moves
+            });
+        }
+
+        @JavascriptInterface public void failed() {
+            handler.post(() -> {
+                if (trailerKey == null) return;
+                AppLog.w("trailer " + trailerKey + " can't play here (YouTube refused the embed)");
+                String keep = trailerFor;
+                stopTrailer();
+                trailerFor = keep;
+            });
+        }
+    }
+
     /**
      * The row follows the selected card whether or not it has focus: that card goes wide, and the row scrolls so it
      * leads (near the end, the last three stay on screen).
@@ -1779,6 +1965,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         }
     }
 
+    /** Aims a group's springs (only `focused` at 1); returns true if any target changed. */
     private static boolean aim(Spring[] springs, int focused, boolean snap) {
         boolean changed = false;
         for (int i = 0; i < springs.length; i++) {
@@ -2795,6 +2982,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         showSelectedBackdrop();
         heroDirty = true;
         spoken.focusMoved();    // new picks under the focused card
+        scheduleTrailer();      // a new title under the focus: its own trailer
     }
 
     /** The background is the selected card's photo (kept as it is until that one is ready). */
