@@ -81,18 +81,18 @@ final class HomeApps {
      */
     private static final String[][] SHELF = {
         {"netflix", "Netflix", "com.netflix.ninja", "E50914", "", "1"},
-        {"youtube", "YouTube", "com.google.android.youtube.tv", "FF0033", "play", "1"},
         {"prime", "Prime Video", "com.amazon.amazonvideo.livingroom", "1A98FF", "tint", "0.96"},
-        {"disney", "Disney+", "com.disney.disneyplus", "1838C8", "", "1"},
-        {"max", "Max", "com.wbd.stream", "6C3BE0", "", "1.32"},
-        {"max", "HBO Max", "com.hbo.hbonow", "6C3BE0", "", "1.32"},
+        {"youtube", "YouTube", "com.google.android.youtube.tv", "FF0033", "play", "1"},
         {"appletv", "Apple TV", "com.apple.atve.androidtv.appletv", "B8BCC6", "", "1.1"},
         {"appletv", "Apple TV", "com.apple.atve.sony.appletv", "B8BCC6", "", "1.1"},   // Sony's own build
+        {"max", "Max", "com.wbd.stream", "6C3BE0", "", "1.32"},
+        {"max", "HBO Max", "com.hbo.hbonow", "6C3BE0", "", "1.32"},
+        {"disney", "Disney+", "com.disney.disneyplus", "1838C8", "", "1"},
         {"hulu", "Hulu", "com.hulu.livingroomplus", "1CE783", "", "1"},
+        {"spotify", "Spotify", "com.spotify.tv.android", "1DB954", "", "1"},
         {"paramount", "Paramount+", "com.cbs.ott", "0064FF", "", "1"},
         {"peacock", "Peacock", "com.peacocktv.peacockandroid", "6E55DC", "", "1"},
         {"globoplay", "Globoplay", "com.globo.globotv", "FF5A1F", "tint", "1"},
-        {"spotify", "Spotify", "com.spotify.tv.android", "1DB954", "", "1"},
     };
     static final int MAX_SHELF = 8;
     /** Live TV apps of some brands (the antenna's channels open through the standard Android request first). */

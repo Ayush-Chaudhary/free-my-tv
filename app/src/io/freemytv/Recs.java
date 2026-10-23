@@ -184,7 +184,10 @@ final class Recs {
         return now(null);
     }
 
-    /** This hour's 3, movies only ("movie") or shows only ("tv"); null = both (the home screen tabs). */
+    /** Picks per tab each hour: the row on the home screen scrolls through them. */
+    static final int COUNT = 10;
+
+    /** This hour's COUNT, movies only ("movie") or shows only ("tv"); null = both (the home screen tabs). */
     List<Pick> now(String kind) {
         List<Pick> list = new ArrayList<>();
         if (!hasKey(context)) return list;    // no TMDB key: no recommendations
@@ -195,11 +198,11 @@ final class Recs {
         }
         if (list.isEmpty()) return list;
         long hour = System.currentTimeMillis() / 3600_000L;
-        // Three per hour, never two from the same franchise ("Law & Order" and "Law & Order: Special…").
+        // COUNT per hour, never two from the same franchise ("Law & Order" and "Law & Order: Special…").
         List<Pick> out = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
-        for (int i = 0; i < list.size() && out.size() < 3; i++) {
-            Pick p = list.get((int) ((hour * 3 + i) % list.size()));
+        for (int i = 0; i < list.size() && out.size() < COUNT; i++) {
+            Pick p = list.get((int) ((hour * COUNT + i) % list.size()));
             if (seen.add(franchise(p.title))) out.add(p);
         }
         return out;
@@ -748,7 +751,8 @@ final class Recs {
             if (forLight != light) return;   // the design changed midway: this one is stale
             synchronized (images) {
                 images.put(p.backdrop, backdrop);
-                while (images.size() > (forLight ? 10 : 4)) images.remove(images.keySet().iterator().next());
+                // Light design: one tab's row plus two spare (about 4 MB each); the row preloads only its own tab.
+                while (images.size() > (forLight ? COUNT + 2 : 4)) images.remove(images.keySet().iterator().next());
             }
             notifyListeners();
         } catch (IOException | RuntimeException | OutOfMemoryError e) {
