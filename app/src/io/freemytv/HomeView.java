@@ -43,6 +43,7 @@ import org.json.JSONObject;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.WeakHashMap;
@@ -98,7 +99,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private static final ExecutorService LOADER = Executors.newSingleThreadExecutor();
     // Light design (the L_ constants): title, tab bar, three recommendation cards and the shelf.
     // The tab bar is a 68 px capsule; the cards sit on the 5-column grid (the wide one spans 3).
-    private static final float L_TITLE_BASE = 130, L_TABBAR_TOP = 158, L_TABBAR_H = 68, L_CARDS_TOP = 262, L_CARD_H = 442;
+    private static final float L_TITLE_BASE = 130, L_TABBAR_TOP = 158, L_TABBAR_H = 68, L_CARDS_TOP = 262, L_CARD_H = 386;
     private static final float L_TALL_W = 320, L_CARD_GAP = 40, L_BUTTON = 68, L_BUTTON_GAP = 20, L_BUTTON_CY = 103;
     private static final float L_PLATTER_TOP = 814, L_TILE_H = 126;
     private static final float L_DATE_BASE = 330, L_CLOCK_BASE = 540, L_WEATHER_BASE = 626, L_QUOTES_BASE = 694;
@@ -552,7 +553,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         int width = MeasureSpec.getSize(widthSpec), height = MeasureSpec.getSize(heightSpec);
         float kk = width / 1920f;
         measure(sky, width, height);
-        measure(heroLayer, width, Math.round(790 * kk));
+        measure(heroLayer, width, Math.round(830 * kk));   // down to the light design's two lines about the wide card
         measure(status, Math.round(1160 * kk), Math.round(240 * kk));
         // Sized to what they draw (the glass and its shadow; the grown tiles and their shadows): smaller layers are
         // cheaper for the GPU to composite on every frame of the drawer animation.
@@ -627,6 +628,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         lCardTitle = Ui.text(Ui.semibold, 31 * k, L_INK);
         lCardTitle.setLetterSpacing(0.012f);
         lCardMeta = Ui.text(Ui.medium, 25 * k, L_DIM);
+        lCardAbout = new TextPaint(Ui.text(Ui.regular, 23 * k, L_DIM));
         lQuote = Ui.numbers(Ui.regular, 21 * k, L_FAINT);
         lTip = Ui.text(Ui.semibold, 25 * k, L_INK);
         lTip.setTextAlign(Paint.Align.CENTER);
@@ -989,6 +991,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         lTabOn.setColor(tone(L_INK, WHITE));
         lCardTitle.setColor(tone(L_INK, WHITE));
         lCardMeta.setColor(tone(L_DIM, 0xFF98989D));
+        lCardAbout.setColor(tone(L_DIM, 0xFF98989D));
         lQuote.setColor(tone(L_FAINT, 0xB8FFFFFF));
         lTip.setColor(tone(L_INK, WHITE));
         lDate.setColor(tone(L_DIM, 0xFF98989D));
@@ -3220,6 +3223,39 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             c.drawText(TextUtils.ellipsize(p.meta, fitPaint, bw, TextUtils.TruncateAt.END).toString(), base.left, base.bottom + 80 * k, lCardMeta);
             lCardMeta.setAlpha(alpha);
         }
+        if (wideness > 0.01f && p.overview != null && !p.overview.isEmpty()) {
+            StaticLayout about = about(p.overview, bw);
+            int alpha = lCardAbout.getAlpha();
+            lCardAbout.setAlpha(Math.round(alpha * wideness));
+            c.save();
+            c.translate(base.left, base.bottom + 98 * k);
+            about.draw(c);
+            c.restore();
+            lCardAbout.setAlpha(alpha);
+        }
+    }
+
+    // The wide card's two lines about the title, laid out once per title; mid-slide two cards are wide, so a few are kept.
+    // The layouts draw with lCardAbout itself, so its color and fade apply.
+    private TextPaint lCardAbout;
+    private final Map<String, StaticLayout> abouts = new LinkedHashMap<String, StaticLayout>(8, 0.75f, true) {
+        @Override protected boolean removeEldestEntry(Map.Entry<String, StaticLayout> e) { return size() > 4; }
+    };
+
+    private StaticLayout about(String text, float width) {
+        int wi = Math.max(1, Math.round(width));
+        String key = wi + "|" + text;
+        StaticLayout l = abouts.get(key);
+        if (l == null) {
+            l = StaticLayout.Builder.obtain(text, 0, text.length(), lCardAbout, wi)
+                    .setMaxLines(2)
+                    .setEllipsize(TextUtils.TruncateAt.END)
+                    .setLineSpacing(4 * k, 1)
+                    .setIncludePad(false)
+                    .build();
+            abouts.put(key, l);
+        }
+        return l;
     }
 
     /** A card in the row that shows on screen (the scrolled-away ones are skipped). */
