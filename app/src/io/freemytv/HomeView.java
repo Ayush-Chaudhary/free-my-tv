@@ -16,8 +16,10 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.graphics.RenderEffect;
 import android.graphics.Shader;
 import android.media.tv.TvInputManager;
+import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
@@ -28,6 +30,8 @@ import android.text.TextPaint;
 import android.text.TextUtils;
 import android.view.Choreographer;
 import android.view.KeyEvent;
+import android.view.animation.PathInterpolator;
+import android.animation.ValueAnimator;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.accessibility.AccessibilityManager;
@@ -562,6 +566,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         measure(drawerLayer, width, Math.round(600 * kk));
         measure(sheetLayer, width, height);
         measure(toastLayer, Math.round(1000 * kk), Math.round(220 * kk));
+        if (trailerScrim != null) measure(trailerScrim, width, height);
         if (trailerBox != null) measure(trailerBox, Math.round(trailerRect.width()), Math.round(trailerRect.height()));
         setMeasuredDimension(width, height);
     }
@@ -583,6 +588,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         sheetLayer.setPivotX(width / 2f);
         sheetLayer.setPivotY(height / 2f);
         place(toastLayer, (width - toastLayer.getMeasuredWidth()) / 2, 0);
+        if (trailerScrim != null) trailerScrim.layout(0, 0, width, height);
         layoutTrailer();
     }
 
@@ -1780,8 +1786,20 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private FrameLayout trailerBox;     // made on the first trailer: a WebView costs memory a TV without picks never needs
     private WebView web;
     private String trailerFor, trailerKey;  // the pick it's for (Recs.key) and the YouTube id loaded
-    private final RectF trailerRect = new RectF();
+    private final RectF trailerRect = new RectF();   // where it pops out to: 16:9, in the middle of the screen
+    private final RectF cardAt = new RectF();        // the focused card it starts in and shrinks back into
     private float trailerRadius;
+    /** Dims what's behind the popped trailer (and blurs it from Android 12, where views take a RenderEffect). */
+    private View trailerScrim;
+    private boolean popped;
+    private float backdropLevel;
+    private ValueAnimator backdropAnim;
+    private static final float POP_W = 1360, POP_DIM = 0.55f, POP_BLUR = 28;
+    private static final long POP_MS = 520, POP_AFTER = 900;
+    /** Apple's ease: quick out of the start, a long soft landing. The page's crop uses the same curve. */
+    private static final PathInterpolator POP_EASE = new PathInterpolator(0.32f, 0.72f, 0f, 1f);
+    private static final String POP_CSS_EASE = "cubic-bezier(.32,.72,0,1)";
+    private final Runnable popTrailer = this::popTrailer;
     private final Runnable trailerStart = this::startTrailer;
 
     /** The pick whose trailer may play: the selected card while it has focus and nothing covers the row. */
@@ -1813,7 +1831,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             trailerKey = id;
             placeTrailer();
             float d = getResources().getDisplayMetrics().density;
-            String call = String.format(java.util.Locale.US, "play('%s',%.1f)", id, trailerRadius / d);
+            String call = String.format(java.util.Locale.US, "play('%s',%.2f,%.1f)", id, cardInset(), cardRadiusCss());
             if (pageReady) web.evaluateJavascript(call, null);
             else pendingCall = call;    // the first trailer can come before the page has loaded
         });
@@ -1824,14 +1842,28 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     private void stopTrailer() {
         handler.removeCallbacks(trailerStart);
+        handler.removeCallbacks(popTrailer);
         trailerFor = null;
         pendingCall = null;
-        if (trailerKey != null && web != null) web.evaluateJavascript("stop()", null);
+        boolean was = trailerKey != null;
         trailerKey = null;
         if (trailerBox != null) {
             trailerBox.animate().cancel();
-            trailerBox.setAlpha(0);
+            if (running && trailerBox.getAlpha() > 0) {
+                // Back into the card it came from, fading as it lands; the video stops once it's out of sight.
+                if (popped) web.evaluateJavascript(String.format(java.util.Locale.US, "shape(%.2f,%.1f,%d)", cardInset(), cardRadiusCss(), 300), null);
+                trailerBox.animate().scaleX(cardScale()).scaleY(cardScale())
+                        .translationX(cardAt.centerX() - trailerRect.centerX()).translationY(cardAt.centerY() - trailerRect.centerY())
+                        .alpha(0).setDuration(300).setInterpolator(POP_EASE)
+                        .withEndAction(() -> { if (trailerKey == null && web != null) web.evaluateJavascript("stop()", null); })
+                        .start();
+            } else {
+                trailerBox.setAlpha(0);
+                if (was && web != null) web.evaluateJavascript("stop()", null);
+            }
         }
+        popped = false;
+        animateBackdrop(0, running ? 300 : 0);
         // Stopped, YouTube's page still kept a CPU core busy (measured on a TCL G10): asleep a moment after stop() has
         // run, and gone (with its renderer process and ~75 MB) if no other trailer comes soon.
         // Counted from the last trailer, not from the last focus change (every move off the row comes through here).
@@ -1857,9 +1889,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (web == null || trailerKey != null) return;
         if (playerAsleep) web.resumeTimers();   // the timers are the process's, not this view's: back on before it goes
         removeView(trailerBox);
+        removeView(trailerScrim);
         web.destroy();
         web = null;
         trailerBox = null;
+        trailerScrim = null;
         pageReady = false;
         playerAsleep = false;
         AppLog.w("trailer player released");
@@ -1875,13 +1909,84 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         playerAsleep = false;
     }
 
-    /** Over the selected card as drawLightCard draws it focused (grown 5% and lifted), with its rounded corners. */
+    /**
+     * Laid out where it pops out to, and shrunk onto the selected card as drawLightCard draws it focused (grown 5% and
+     * lifted): scaled to the card's width, with the page cropping the 16:9 video to the card's shape. Popping out only
+     * animates the scale and the crop, never the WebView's size (a resize every frame would relayout YouTube's page).
+     */
     private void placeTrailer() {
         RectF base = cardRects[cardIndex];
         float s = 1.05f, cx = base.centerX(), cy = base.centerY() - 6 * k;
-        trailerRect.set(cx - base.width() * s / 2, cy - base.height() * s / 2, cx + base.width() * s / 2, cy + base.height() * s / 2);
-        trailerRadius = 18 * k * s;
+        cardAt.set(cx - base.width() * s / 2, cy - base.height() * s / 2, cx + base.width() * s / 2, cy + base.height() * s / 2);
+        float pw = POP_W * k, ph = pw * 9 / 16;
+        trailerRect.set((w - pw) / 2, (h - ph) / 2, (w + pw) / 2, (h + ph) / 2);
+        trailerRadius = 26 * k;
         layoutTrailer();
+        trailerBox.setPivotX(pw / 2);
+        trailerBox.setPivotY(ph / 2);
+        trailerBox.setScaleX(cardScale());
+        trailerBox.setScaleY(cardScale());
+        trailerBox.setTranslationX(cardAt.centerX() - trailerRect.centerX());
+        trailerBox.setTranslationY(cardAt.centerY() - trailerRect.centerY());
+    }
+
+    private float cardScale() {
+        return trailerRect.width() > 0 ? cardAt.width() / trailerRect.width() : 1;
+    }
+
+    /** How much of the video's height the card hides, top and bottom each, in percent. */
+    private float cardInset() {
+        float shown = cardAt.height() / cardScale() / Math.max(1, trailerRect.height());
+        return Math.max(0, (1 - shown) / 2 * 100);
+    }
+
+    /** The card's corner radius in the page's (unscaled) CSS pixels. */
+    private float cardRadiusCss() {
+        return 18 * k * 1.05f / cardScale() / getResources().getDisplayMetrics().density;
+    }
+
+    /** Out of the card to the middle of the screen, the whole trailer uncropped, everything behind it dimmed. */
+    private void popTrailer() {
+        if (trailerBox == null || trailerKey == null || !running) return;
+        popped = true;
+        float d = getResources().getDisplayMetrics().density;
+        web.evaluateJavascript(String.format(java.util.Locale.US, "shape(0,%.1f,%d)", trailerRadius / d, POP_MS), null);
+        trailerBox.animate().scaleX(1).scaleY(1).translationX(0).translationY(0).alpha(1)
+                .setDuration(POP_MS).setInterpolator(POP_EASE).start();
+        animateBackdrop(1, POP_MS);
+    }
+
+    /** 0 = the home screen as it is, 1 = dimmed (and blurred) behind the popped trailer. */
+    private void animateBackdrop(float to, long ms) {
+        if (backdropAnim != null) backdropAnim.cancel();
+        backdropAnim = null;
+        if (trailerScrim == null || backdropLevel == to) {
+            if (trailerScrim == null) setBackdrop(0);
+            return;
+        }
+        if (ms <= 0) {
+            setBackdrop(to);
+            return;
+        }
+        backdropAnim = ValueAnimator.ofFloat(backdropLevel, to);
+        backdropAnim.setDuration(ms);
+        backdropAnim.setInterpolator(POP_EASE);
+        backdropAnim.addUpdateListener(a -> setBackdrop((float) a.getAnimatedValue()));
+        backdropAnim.start();
+    }
+
+    private int blurStep = -1;
+
+    private void setBackdrop(float level) {
+        backdropLevel = level;
+        if (trailerScrim != null) trailerScrim.setAlpha(POP_DIM * level);
+        if (Build.VERSION.SDK_INT < 31) return;
+        // In steps of 2 px: a new RenderEffect only when the blur visibly changes, not on every frame.
+        int step = Math.round(POP_BLUR * k * level / 2);
+        if (step == blurStep) return;
+        blurStep = step;
+        RenderEffect blur = step == 0 ? null : RenderEffect.createBlurEffect(step * 2f, step * 2f, Shader.TileMode.CLAMP);
+        for (View v : new View[] {heroLayer, status, platter, tiles}) v.setRenderEffect(blur);
     }
 
     private void layoutTrailer() {
@@ -1923,28 +2028,39 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             }
         });
         trailerBox.addView(web, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-        addView(trailerBox, indexOfChild(heroLayer) + 1);
+        trailerScrim = new View(getContext());
+        trailerScrim.setBackgroundColor(0xFF000000);
+        trailerScrim.setAlpha(0);
+        trailerScrim.setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_NO);
+        // Over the row and the shelf (it pops out over both), under the drawer, the sheet and the toasts.
+        addView(trailerScrim, indexOfChild(tiles) + 1);
+        addView(trailerBox, indexOfChild(trailerScrim) + 1);
         web.loadDataWithBaseURL("https://freemytv.io/", PLAYER, "text/html", "utf-8", null);
     }
 
     /**
-     * YouTube's player at full volume, so the TV's own volume (and its buttons, live) sets how loud it is; without controls, covering the card like a photo (cropped at 16:9). It reports back
-     * when the video really plays, so the card shows the photo until then, and when it ends or fails.
+     * YouTube's player at full volume, so the TV's own volume (and its buttons, live) sets how loud it is, without controls.
+     * The video fills the 16:9 page; shape() crops it to the card's shape or opens it up, with the pop-out's curve. It
+     * reports back when the video really plays, so the card shows the photo until then, and when it ends or fails.
      * Adapted from the streaming edition of Free My TV (github.com/javiermiz/free-my-tv, MIT).
      */
     private static final String PLAYER = "<!doctype html><html><head>"
-            + "<style>html{background:transparent}body{margin:0;width:100%;height:100%;background:#000;overflow:hidden}"
+            + "<style>html{background:transparent}body{margin:0;width:100%;height:100%;background:transparent;overflow:hidden}"
+            + "#c{position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden;background:#000}"
             + "#p{position:absolute;border:0}</style>"
-            + "</head><body><div id=p></div><script src='https://www.youtube.com/iframe_api'></script><script>"
+            + "</head><body><div id=c><div id=p></div></div><script src='https://www.youtube.com/iframe_api'></script><script>"
             + "var player=null,ready=false,pending=null;addEventListener('resize',fit);"
             + "function fit(){var vv=window.visualViewport,W=vv?vv.width:innerWidth,H=vv?vv.height:innerHeight,"
             + "vw=Math.max(W,H*16/9),vh=vw*9/16,f=document.getElementById('p');if(!f)return;"
             + "f.style.width=vw+'px';f.style.height=vh+'px';f.style.left=((W-vw)/2)+'px';f.style.top=((H-vh)/2)+'px';}"
             + "function onYouTubeIframeAPIReady(){ready=true;if(pending){var a=pending;pending=null;play.apply(null,a);}}"
-            + "function play(k,r){document.body.style.borderRadius=r+'px';if(!ready){pending=[k,r];return;}fit();setTimeout(fit,300);"
-            + "function sound(p){p.unMute();p.setVolume(100);}"
+            + "function shape(i,r,ms){var c=document.getElementById('c');"
+            + "c.style.transition=ms?'clip-path '+ms+'ms " + POP_CSS_EASE + "':'none';"
+            + "c.style.clipPath='inset('+i+'% 0 round '+r+'px)';}"
+            + "function play(k,i,r){shape(i,r,0);if(!ready){pending=[k,i,r];return;}fit();setTimeout(fit,300);"
+            + "function sound(p){p.unMute();p.setVolume(100);try{p.unloadModule('captions');p.unloadModule('cc');}catch(e){}}"
             + "if(!player){player=new YT.Player('p',{videoId:k,playerVars:{autoplay:1,controls:0,disablekb:1,fs:0,rel:0,"
-            + "playsinline:1,iv_load_policy:3},events:{"
+            + "playsinline:1,iv_load_policy:3,cc_load_policy:0},events:{"
             + "onReady:function(e){fit();sound(e.target);e.target.playVideo();},"
             + "onStateChange:function(e){var id=(player&&player.getVideoData)?player.getVideoData().video_id:'';"
             + "if(e.data==1){sound(player);FreeMyTV.playing(id);}if(e.data==0)FreeMyTV.ended(id);},"
@@ -1961,7 +2077,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 handler.postDelayed(() -> {
                     if (!id.equals(trailerKey) || trailerBox.getAlpha() >= 1) return;
                     AppLog.w("trailer on " + id);
-                    trailerBox.animate().alpha(1).setDuration(500).start();
+                    trailerBox.animate().alpha(1).setDuration(400).setInterpolator(POP_EASE).start();
+                    handler.removeCallbacks(popTrailer);
+                    handler.postDelayed(popTrailer, POP_AFTER);
                 }, 700);
             });
         }
@@ -2328,7 +2446,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private void back() {
-        if (sheetOpen) {
+        if (popped) {
+            String keep = trailerFor;
+            stopTrailer();
+            trailerFor = keep;      // closed on this card: it doesn't open again until the focus moves
+        } else if (sheetOpen) {
             closeSheet();
         } else if (zone == Z_DRAWER || zone == WIDGETS) {
             closeDrawer();
