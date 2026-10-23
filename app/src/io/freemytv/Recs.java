@@ -676,8 +676,9 @@ final class Recs {
         return "netflix".equals(p.app) || "disney".equals(p.app) || "prime".equals(p.app);
     }
 
+    // "wd2:": answers saved by the first builds ("wd:") could be empty for titles Wikidata does have.
     private static String wikidataKey(Pick p) {
-        return "wd:" + p.kind + p.id + p.app;
+        return "wd2:" + p.kind + p.id + p.app;
     }
 
     // The ids end up in a URL the app opens: only their own shapes get through.
@@ -936,10 +937,15 @@ final class Recs {
             SharedPreferences.Editor e = cache.edit().putString("picks", a.toString()).putInt("period", period).putLong("listAt", listAt)
                     .putString("language", listLanguage)
                     .putLong("keyStamp", keyStamp).putInt("version", CACHE_VERSION);
-            // Watchmode links of titles no longer in the list go (the refused-key mark stays).
+            // Links of titles no longer in the list go (the refused-key mark stays), and the first builds' Wikidata answers.
             Set<String> keep = new HashSet<>();
-            for (Pick p : picks) keep.add(linkKey(p));
-            for (String k : cache.getAll().keySet()) if (k.startsWith("wm:") && !k.equals("wm:refused") && !keep.contains(k)) e.remove(k);
+            for (Pick p : picks) {
+                keep.add(linkKey(p));
+                keep.add(wikidataKey(p));
+            }
+            for (String k : cache.getAll().keySet()) {
+                if (k.startsWith("wd:") || (k.startsWith("wd2:") || k.startsWith("wm:")) && !k.equals("wm:refused") && !keep.contains(k)) e.remove(k);
+            }
             e.apply();
         } catch (Exception ignored) {
         }

@@ -1925,7 +1925,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     /**
-     * YouTube's player, at 60% volume and without controls, covering the card like a photo (cropped at 16:9). It reports back
+     * YouTube's player at full volume, so the TV's own volume (and its buttons, live) sets how loud it is; without controls, covering the card like a photo (cropped at 16:9). It reports back
      * when the video really plays, so the card shows the photo until then, and when it ends or fails.
      * Adapted from the streaming edition of Free My TV (github.com/javiermiz/free-my-tv, MIT).
      */
@@ -1939,12 +1939,12 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             + "f.style.width=vw+'px';f.style.height=vh+'px';f.style.left=((W-vw)/2)+'px';f.style.top=((H-vh)/2)+'px';}"
             + "function onYouTubeIframeAPIReady(){ready=true;if(pending){var a=pending;pending=null;play.apply(null,a);}}"
             + "function play(k,r){document.body.style.borderRadius=r+'px';if(!ready){pending=[k,r];return;}fit();setTimeout(fit,300);"
-            + "function sound(p){p.unMute();p.setVolume(60);}"
+            + "function sound(p){p.unMute();p.setVolume(100);}"
             + "if(!player){player=new YT.Player('p',{videoId:k,playerVars:{autoplay:1,controls:0,disablekb:1,fs:0,rel:0,"
             + "playsinline:1,iv_load_policy:3},events:{"
             + "onReady:function(e){fit();sound(e.target);e.target.playVideo();},"
             + "onStateChange:function(e){var id=(player&&player.getVideoData)?player.getVideoData().video_id:'';"
-            + "if(e.data==1)FreeMyTV.playing(id);if(e.data==0)FreeMyTV.ended(id);},"
+            + "if(e.data==1){sound(player);FreeMyTV.playing(id);}if(e.data==0)FreeMyTV.ended(id);},"
             + "onError:function(e){FreeMyTV.failed();}}});}"
             + "else{player.loadVideoById(k);sound(player);}}"
             + "function stop(){pending=null;if(player&&player.stopVideo)player.stopVideo();}</script></body></html>";
