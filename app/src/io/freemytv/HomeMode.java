@@ -391,6 +391,8 @@ final class HomeMode {
                 if (!Arrays.asList(DEBLOAT).contains(pkg) && !Arrays.asList(ASSISTANT).contains(pkg)) toEnable.add(pkg);
             }
             toEnable.removeAll(stringList(s, "keptOff"));
+            // The home screen comes back even if it was off before Free My TV (original_home names another one).
+            if (packageOf(home) != null) toEnable.add(packageOf(home));
             Set<String> present = packages(adb, "");
             // The TV's home screen first and Google TV's setup app last, after the home screen is back: alone, its
             // recovery screen would take the Home button.
@@ -418,7 +420,7 @@ final class HomeMode {
                 }
             }
             record(adb, new HashSet<>(failed));
-            restoreScreensaver(adb, s);
+            if (Config.OWN_SCREENSAVER) restoreScreensaver(adb, s);   // otherwise it was never changed
             try {
                 remoteService(c, adb, false);
             } catch (IOException e) {
@@ -518,7 +520,7 @@ final class HomeMode {
                 }
                 record(adb, stillOff);
                 // The screensaver first: if that fails, the revert isn't marked done and the next try does it again.
-                restoreScreensaver(adb, s);
+                if (Config.OWN_SCREENSAVER) restoreScreensaver(adb, s);   // otherwise it was never changed
                 s.put("homeReverted", true).put("disabled", kept);
                 save(app, s);
                 notice(app, Ui.tr("Free My TV's home screen crashed 3 times in a row; I switched back to the original one."));
@@ -708,7 +710,8 @@ final class HomeMode {
 
     /** The recorded home screen of the TV, as {@link #realHome}. */
     private static String originalHome(JSONObject s) {
-        return realHome(s.optString("originalHome", ""));
+        String chosen = Config.ORIGINAL_HOME.trim();
+        return realHome(chosen.isEmpty() ? s.optString("originalHome", "") : chosen);
     }
 
     /**
