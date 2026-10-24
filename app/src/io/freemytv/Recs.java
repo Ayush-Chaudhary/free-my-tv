@@ -50,6 +50,24 @@ final class Recs {
         boolean detailed;
     }
 
+    /** A row on the home screen: its name and its titles (the same Pick objects across rows, so details found once show in all). */
+    static final class Row {
+        final String title;
+        final List<Pick> picks;
+
+        Row(String title, List<Pick> picks) {
+            this.title = title;
+            this.picks = picks;
+        }
+    }
+
+    /** TMDB's genres that get a row, in order. Movies: Action, Comedy, Drama, Thriller, Horror, Science Fiction, Romance, Animation. */
+    private static final int[] MOVIE_GENRES = {28, 35, 18, 53, 27, 878, 10749, 16};
+    /** Shows: Action & Adventure, Comedy, Drama, Crime, Sci-Fi & Fantasy, Mystery, Animation, Reality. */
+    private static final int[] TV_GENRES = {10759, 35, 18, 80, 10765, 9648, 16, 10764};
+    /** A row keeps a few more titles than it shows: some turn out not to be on the TV's apps once their details come. */
+    private static final int ROW_SPARE = 6;
+
     interface Listener { void onRecs(); }
 
     private static final String API = "https://api.themoviedb.org/3";
@@ -59,7 +77,7 @@ final class Recs {
     private static final int ANIMATION = 16;
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 5;
+    private static final int CACHE_VERSION = 6;
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     /** Service name on TMDB (part of the name, lowercase) → TV app (HomeApps key, package). */
     private static final String[][] SERVICES = {
@@ -115,7 +133,9 @@ final class Recs {
     private final List<Listener> listeners = new ArrayList<>();
     private final Map<String, Backdrop> images = new LinkedHashMap<>();   // this hour's, built and ready to draw
     private final java.util.Set<String> pending = new java.util.HashSet<>();
-    private volatile List<Pick> picks = new ArrayList<>();
+    private volatile List<Pick> picks = new ArrayList<>();      // every title in any row
+    private volatile List<List<Row>> rows = new ArrayList<>();  // per tab (movies, shows)
+    private volatile int activeTab, activeRow;                  // the row on screen: its details and photos come first
     private volatile int period = -1;
     private volatile long listAt;
     private volatile boolean fetching;
@@ -131,6 +151,8 @@ final class Recs {
         try {
             String saved = cache.getString("picks", null);
             if (saved != null) picks = parse(new JSONArray(saved));
+            String savedRows = cache.getString("rows", null);
+            if (savedRows != null) rows = parseRows(new JSONArray(savedRows), picks);
             period = cache.getInt("period", -1);
             listAt = cache.getLong("listAt", 0);
             listLanguage = cache.getString("language", cache.getBoolean("english", false) ? "en" : "pt");
@@ -179,33 +201,35 @@ final class Recs {
         return hour >= 5 && hour < 12 ? MANHA : hour >= 12 && hour < 18 ? TARDE : NOITE;
     }
 
-    /** This hour's picks (the first is the featured one; the arrows switch to the others). */
-    List<Pick> now() {
-        return now(null);
-    }
-
-    /** Picks per tab each hour: the row on the home screen scrolls through them. */
+    /** Titles per row on the home screen. */
     static final int COUNT = 10;
 
-    /** This hour's COUNT, movies only ("movie") or shows only ("tv"); null = both (the home screen tabs). */
-    List<Pick> now(String kind) {
-        List<Pick> list = new ArrayList<>();
-        if (!hasKey(context)) return list;    // no TMDB key: no recommendations
-        Map<String, Boolean> have = new HashMap<>();   // one look per app, not per title (this runs every 15 s)
-        for (Pick p : picks) {
-            if ((kind == null || kind.equals(p.kind))
-                    && (!p.detailed || (p.pkg != null && have.computeIfAbsent(p.pkg, this::installed)))) list.add(p);   // app missing: skip
-        }
-        if (list.isEmpty()) return list;
-        long hour = System.currentTimeMillis() / 3600_000L;
-        // COUNT per hour, never two from the same franchise ("Law & Order" and "Law & Order: Special…").
-        List<Pick> out = new ArrayList<>();
-        java.util.Set<String> seen = new java.util.HashSet<>();
-        for (int i = 0; i < list.size() && out.size() < COUNT; i++) {
-            Pick p = list.get((int) ((hour * COUNT + i) % list.size()));
-            if (seen.add(franchise(p.title))) out.add(p);
+    /**
+     * A tab's rows (0 = movies, 1 = shows): up to COUNT titles each whose app the TV has (or that aren't looked up yet),
+     * empty rows left out.
+     */
+    List<Row> rows(int tab) {
+        List<Row> out = new ArrayList<>();
+        List<List<Row>> all = rows;
+        if (!hasKey(context) || tab < 0 || tab >= all.size()) return out;
+        Map<String, Boolean> have = new HashMap<>();   // one look per app, not per title
+        for (Row r : all.get(tab)) {
+            List<Pick> list = new ArrayList<>();
+            for (Pick p : r.picks) {
+                if (list.size() >= COUNT) break;
+                if (!p.detailed || (p.pkg != null && have.computeIfAbsent(p.pkg, this::installed))) list.add(p);
+            }
+            if (!list.isEmpty()) out.add(new Row(r.title, list));
         }
         return out;
+    }
+
+    /** The row on screen: its titles (and the next row's) get their details and photos ahead of the others. */
+    void setActive(int tab, int row) {
+        if (tab == activeTab && row == activeRow) return;
+        activeTab = tab;
+        activeRow = row;
+        refreshIfStale();
     }
 
     /** "Law & Order: Special Victims Unit" → "law & order" (what comes before ":" or " - "). */
@@ -337,7 +361,7 @@ final class Recs {
         long sinceFail = System.currentTimeMillis() - failedAt;
         if (failedAt != 0 && sinceFail >= 0 && sinceFail < 10 * 60_000L) return;
         List<Pick> todo = new ArrayList<>();
-        for (Pick p : picks) if (!p.detailed || (p.pkg != null && !hasImage(p))) todo.add(p);
+        for (Pick p : wanted()) if (!p.detailed || (p.pkg != null && !hasImage(p))) todo.add(p);
         if (todo.isEmpty()) return;
         fetching = true;
         io.execute(() -> {
@@ -367,12 +391,16 @@ final class Recs {
         });
     }
 
-    /** This hour's picks for the three tabs (Explore, Movies, Shows), without repeats. */
+    /** The titles to have ready: each tab's first row, and the row on screen with the one under it, without repeats. */
     List<Pick> wanted() {
         List<Pick> out = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
-        for (String kind : new String[] {null, "movie", "tv"}) {
-            for (Pick p : now(kind)) if (seen.add(key(p))) out.add(p);
+        for (int t = 0; t < 2; t++) {
+            List<Row> tabRows = rows(t);
+            for (int r = 0; r < tabRows.size(); r++) {
+                if (r != 0 && !(t == activeTab && (r == activeRow || r == activeRow + 1))) continue;
+                for (Pick p : tabRows.get(r).picks) if (seen.add(key(p))) out.add(p);
+            }
         }
         return out;
     }
@@ -423,23 +451,40 @@ final class Recs {
                 if (pick.pkg != null) (kind.equals("movie") ? hotMovies : hotShows).add(pick);
             }
         }
-        // 2. Recent releases on the TV's services: movies from the past year and shows with a new episode in the
-        //    past 3 months.
-        JSONArray movies = get("/discover/movie?vote_count.gte=30&primary_release_date.gte=" + day(-365)
-                + "&primary_release_date.lte=" + day(0) + common).getJSONArray("results");
-        JSONArray shows = get("/discover/tv?vote_count.gte=20&air_date.gte=" + day(-90) + "&air_date.lte=" + day(0)
-                + common).getJSONArray("results");
-        List<Pick> newMovies = new ArrayList<>(), newShows = new ArrayList<>();
-        for (int i = 0; i < movies.length(); i++) add(newMovies, movies.getJSONObject(i), "movie");
-        for (int i = 0; i < shows.length(); i++) add(newShows, shows.getJSONObject(i), "tv");
-        // Trending first, then the new releases; movies and shows alternating, without repeats. Room for two tabs'
-        // worth of each kind: some new releases turn out not to be on the TV's services once their details come.
-        int pool = 4 * COUNT + 4;
-        List<Pick> list = new ArrayList<>();
-        java.util.Set<String> seen = new java.util.HashSet<>();
-        alternate(list, seen, hotMovies, hotShows, pool);
-        alternate(list, seen, newMovies, newShows, pool);
+        // 2. Per tab: Top 10 (trending, topped up with the most popular), what's new, then a row per genre; all only
+        //    what's on the TV's services, most popular first.
+        Map<String, Pick> all = new java.util.LinkedHashMap<>();
+        for (Pick pick : hotMovies) all.put(key(pick), pick);
+        for (Pick pick : hotShows) all.put(key(pick), pick);
+        List<List<Row>> built = new ArrayList<>();
+        for (String kind : new String[] {"movie", "tv"}) {
+            boolean movie = kind.equals("movie");
+            List<Row> tabRows = new ArrayList<>();
+            List<Pick> top = new ArrayList<>(movie ? hotMovies : hotShows);
+            fill(top, all, discover(kind, "&vote_count.gte=" + (movie ? 200 : 100), common), kind);
+            tabRows.add(new Row(Ui.tr(movie ? "Top 10 Movies" : "Top 10 Shows"), top));
+            List<Pick> fresh = new ArrayList<>();
+            fill(fresh, all, discover(kind, movie
+                    ? "&vote_count.gte=30&primary_release_date.gte=" + day(-365) + "&primary_release_date.lte=" + day(0)
+                    : "&vote_count.gte=20&air_date.gte=" + day(-90) + "&air_date.lte=" + day(0), common), kind);
+            if (!fresh.isEmpty()) tabRows.add(new Row(Ui.tr("New on your apps"), fresh));
+            Map<Integer, String> names = genreNames(kind);
+            for (int g : movie ? MOVIE_GENRES : TV_GENRES) {
+                String name = names.get(g);
+                if (name == null || (Config.HIDE_ANIMATION && g == ANIMATION)) continue;
+                List<Pick> list = new ArrayList<>();
+                try {
+                    fill(list, all, discover(kind, "&vote_count.gte=" + (movie ? 100 : 50) + "&with_genres=" + g, common), kind);
+                } catch (Exception e) {
+                    continue;   // one genre failing leaves the others
+                }
+                if (!list.isEmpty()) tabRows.add(new Row(genre(name), list));
+            }
+            built.add(tabRows);
+        }
+        List<Pick> list = new ArrayList<>(all.values());
         if (list.isEmpty()) throw new IOException("TMDB returned no recommendations");
+        rows = built;
         picks = list;
         period = p;
         listAt = System.currentTimeMillis();
@@ -457,11 +502,36 @@ final class Recs {
         return lang + "-" + Ui.locale().getCountry();
     }
 
-    private static void alternate(List<Pick> out, java.util.Set<String> seen, List<Pick> a, List<Pick> b, int max) {
-        for (int i = 0; i < Math.max(a.size(), b.size()) && out.size() < max; i++) {
-            if (i < a.size() && seen.add(key(a.get(i)))) out.add(a.get(i));
-            if (i < b.size() && out.size() < max && seen.add(key(b.get(i)))) out.add(b.get(i));
+    private JSONArray discover(String kind, String filters, String common) throws Exception {
+        return get("/discover/" + kind + "?page=1" + filters + common).getJSONArray("results");
+    }
+
+    /** Adds TMDB results to a row (up to COUNT + ROW_SPARE), reusing the Pick a title already has in another row. */
+    private static void fill(List<Pick> row, Map<String, Pick> all, JSONArray results, String kind) {
+        java.util.Set<String> inRow = new java.util.HashSet<>();
+        for (Pick p : row) inRow.add(key(p));
+        for (int i = 0; i < results.length() && row.size() < COUNT + ROW_SPARE; i++) {
+            JSONObject o = results.optJSONObject(i);
+            if (o == null) continue;
+            String k = kind + ":" + o.optInt("id");
+            Pick p = all.get(k);
+            if (p == null) {
+                List<Pick> one = new ArrayList<>();
+                add(one, o, kind);
+                if (one.isEmpty()) continue;
+                p = one.get(0);
+                all.put(k, p);
+            }
+            if (inRow.add(k)) row.add(p);
         }
+    }
+
+    /** TMDB's genre names in the TV's language, by id. */
+    private Map<Integer, String> genreNames(String kind) throws Exception {
+        Map<Integer, String> out = new HashMap<>();
+        JSONArray list = get("/genre/" + kind + "/list?language=" + lang()).getJSONArray("genres");
+        for (int i = 0; i < list.length(); i++) out.put(list.getJSONObject(i).getInt("id"), list.getJSONObject(i).optString("name"));
+        return out;
     }
 
     /** The date `offset` days from today, as "2026-10-19" (negative = in the past). */
@@ -480,6 +550,7 @@ final class Recs {
         p.kind = kind;
         p.title = o.optString(kind.equals("movie") ? "title" : "name");
         p.backdrop = backdrop;
+        p.overview = o.optString("overview").trim();
         list.add(p);
     }
 
@@ -902,13 +973,17 @@ final class Recs {
     }
 
     void trim() {
-        // Explore's picks stay: the home screen opens on that tab, so its cards are never gray when you come back.
+        // The first row's photos stay: the home screen opens on it, so its cards are never gray when you come back.
         java.util.Set<String> keep = new java.util.HashSet<>();
-        for (Pick p : now(null)) if (p.backdrop != null) keep.add(p.backdrop);
+        List<Row> first = rows(0);
+        if (!first.isEmpty()) for (Pick p : first.get(0).picks) if (p.backdrop != null) keep.add(p.backdrop);
         synchronized (images) {
             images.keySet().retainAll(keep);
         }
     }
+
+    /** Photos kept on disk: every tab's first row and a few rows' worth around the one on screen. */
+    private static final int KEEP_FILES = 80;
 
     private static void prune(File dir) {
         // A download cut off when the system stopped the app leaves its .part behind.
@@ -919,9 +994,9 @@ final class Recs {
             if (parts[i].lastModified() < stale) parts[i].delete();
         }
         File[] files = dir.listFiles((d, name) -> !name.endsWith(".part"));
-        if (files == null || files.length <= 24) return;
+        if (files == null || files.length <= KEEP_FILES) return;
         Arrays.sort(files, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
-        for (int i = 0; i < files.length - 24; i++) {
+        for (int i = 0; i < files.length - KEEP_FILES; i++) {
             //noinspection ResultOfMethodCallIgnored
             files[i].delete();
         }
@@ -937,7 +1012,17 @@ final class Recs {
                         .put("meta", p.meta).put("overview", p.overview).put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
                         .put("detailed", p.detailed));
             }
-            SharedPreferences.Editor e = cache.edit().putString("picks", a.toString()).putInt("period", period).putLong("listAt", listAt)
+            JSONArray tabsJson = new JSONArray();
+            for (List<Row> tabRows : rows) {
+                JSONArray t = new JSONArray();
+                for (Row r : tabRows) {
+                    JSONArray keys = new JSONArray();
+                    for (Pick p : r.picks) keys.put(key(p));
+                    t.put(new JSONObject().put("title", r.title).put("keys", keys));
+                }
+                tabsJson.put(t);
+            }
+            SharedPreferences.Editor e = cache.edit().putString("picks", a.toString()).putString("rows", tabsJson.toString()).putInt("period", period).putLong("listAt", listAt)
                     .putString("language", listLanguage)
                     .putLong("keyStamp", keyStamp).putInt("version", CACHE_VERSION);
             // Links of titles no longer in the list go (the refused-key mark stays), and the first builds' Wikidata answers.
@@ -952,6 +1037,28 @@ final class Recs {
             e.apply();
         } catch (Exception ignored) {
         }
+    }
+
+    private static List<List<Row>> parseRows(JSONArray a, List<Pick> picks) {
+        Map<String, Pick> byKey = new HashMap<>();
+        for (Pick p : picks) byKey.put(key(p), p);
+        List<List<Row>> out = new ArrayList<>();
+        for (int t = 0; t < a.length(); t++) {
+            JSONArray tabJson = a.optJSONArray(t);
+            List<Row> tabRows = new ArrayList<>();
+            for (int r = 0; tabJson != null && r < tabJson.length(); r++) {
+                JSONObject o = tabJson.optJSONObject(r);
+                JSONArray keys = o == null ? null : o.optJSONArray("keys");
+                List<Pick> list = new ArrayList<>();
+                for (int i = 0; keys != null && i < keys.length(); i++) {
+                    Pick p = byKey.get(keys.optString(i));
+                    if (p != null) list.add(p);
+                }
+                if (!list.isEmpty()) tabRows.add(new Row(o.optString("title"), list));
+            }
+            out.add(tabRows);
+        }
+        return out;
     }
 
     private static List<Pick> parse(JSONArray a) {
