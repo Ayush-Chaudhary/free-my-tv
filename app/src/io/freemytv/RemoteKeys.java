@@ -60,12 +60,20 @@ final class RemoteKeys {
         String pkg = Prefs.keyApp(keyCode);
         if (pkg.isEmpty()) return false;   // "Nothing": the key goes on as if we weren't here
         if (e.getAction() == KeyEvent.ACTION_DOWN && e.getRepeatCount() == 0) {
+            // The BT_RC813 sends some buttons' press twice, a few ms apart (Apple TV): one launch per press.
+            long now = e.getEventTime();
+            if (keyCode == lastKey && now - lastAt < 300) return true;
+            lastKey = keyCode;
+            lastAt = now;
             Intent intent = launchIntent(c.getPackageManager(), pkg);
             AppLog.w("remote key " + e.getKeyCode() + " -> " + pkg + (intent == null ? " (not installed)" : ""));
             if (intent != null) c.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         }
         return true;
     }
+
+    private static int lastKey;
+    private static long lastAt;
 
     /** The app's TV launcher, or its plain one (kept here, not in HomeApps, so the key process stays small). */
     private static Intent launchIntent(PackageManager pm, String pkg) {
