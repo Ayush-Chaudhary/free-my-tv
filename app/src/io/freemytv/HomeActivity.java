@@ -62,7 +62,13 @@ public class HomeActivity extends Activity {
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         if (intent.getBooleanExtra(EXTRA_SEARCH, false)) {
-            openSearch(this, true);
+            String query = intent.getStringExtra(SearchActivity.EXTRA_QUERY);
+            if (query == null || query.isEmpty()) {
+                openSearch(this, true);
+            } else {
+                startActivity(new Intent(this, SearchActivity.class).putExtra(SearchActivity.EXTRA_QUERY, query)
+                        .putExtra(SearchActivity.EXTRA_NOTE, intent.getBooleanExtra(SearchActivity.EXTRA_NOTE, false)));
+            }
             return;
         }
         if (home != null) home.reset(true);

@@ -51,6 +51,10 @@ import java.util.concurrent.Executors;
 public class SearchActivity extends Activity {
     /** Opens listening, as the remote's mic does. */
     static final String EXTRA_VOICE = "voice";
+    /** Opens on this search, with the results focused (a request Google TV couldn't show). */
+    static final String EXTRA_QUERY = "query";
+    /** Says why: Google TV couldn't load the page for it. */
+    static final String EXTRA_NOTE = "note";
     private static final int VOICE = 1;
     private static final String KATNISS = "com.google.android.katniss";
     private static final long TYPING_PAUSE = 600;
@@ -68,6 +72,7 @@ public class SearchActivity extends Activity {
     private List<String[]> apps = new ArrayList<>();
     private int generation;          // each search's answers are dropped once a newer search has started
     private boolean focusResults;    // after voice: the first result takes the focus when it comes
+    private String note = "";        // shown over the results (why we're here)
     private final Runnable typed = () -> run(field.getText().toString(), false);
 
     @Override protected void onCreate(Bundle saved) {
@@ -79,13 +84,30 @@ public class SearchActivity extends Activity {
             List<String[]> list = HomeApps.launchable(this);
             handler.post(() -> apps = list);
         });
-        if (getIntent().getBooleanExtra(EXTRA_VOICE, false)) listen();
-        else field.requestFocus();
+        if (!searchFor(getIntent())) {
+            if (getIntent().getBooleanExtra(EXTRA_VOICE, false)) listen();
+            else field.requestFocus();
+        }
+    }
+
+    /** A search handed over with the intent: shown at once, results focused. */
+    private boolean searchFor(Intent intent) {
+        String query = intent.getStringExtra(EXTRA_QUERY);
+        if (query == null || query.trim().isEmpty()) return false;
+        note = intent.getBooleanExtra(EXTRA_NOTE, false)
+                ? Ui.trf("Google TV couldn't load “{query}”. Here it is on your apps.", "query", query.trim()) : "";
+        handler.removeCallbacks(typed);
+        field.setText(query);
+        field.setSelection(query.length());
+        handler.removeCallbacks(typed);
+        // The apps list may still be loading: run once it's there.
+        handler.post(() -> run(query, true));
+        return true;
     }
 
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
-        if (intent.getBooleanExtra(EXTRA_VOICE, false)) listen();
+        if (!searchFor(intent) && intent.getBooleanExtra(EXTRA_VOICE, false)) listen();
     }
 
     @Override protected void onDestroy() {
@@ -305,7 +327,7 @@ public class SearchActivity extends Activity {
                 for (Recs.Pick p : result) titlesRow.addView(titleCard(p));
                 show(!result.isEmpty(), appsRow.getChildCount() > 0);
                 status.setText(result.isEmpty() && appsRow.getChildCount() == 0
-                        ? Ui.tr("Nothing on your apps. Ask Google Assistant instead.") : "");
+                        ? Ui.tr("Nothing on your apps. Ask Google Assistant instead.") : note);
                 if (focusResults) {
                     View first = titlesRow.getChildCount() > 0 ? titlesRow.getChildAt(0)
                             : appsRow.getChildCount() > 0 ? appsRow.getChildAt(0) : assist;

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Free My TV</string>
-    <string name="remote_key_service">Lets the app buttons on the remote (Netflix, YouTube, Prime Video, TCL Channel) open the apps you picked in Free My TV, from any app. It only reads those buttons.</string>
+    <string name="remote_key_service">Lets the app buttons on the remote (Netflix, YouTube, Prime Video, TCL Channel, Apple TV) open the apps you picked in Free My TV, from any app, and the Home button bring you back to it. If Google TV\'s app is kept for Google Assistant, it also reads what you asked the Assistant and Google TV\'s title pages, to show Free My TV\'s search when a page fails to load. Nothing is stored or sent.</string>
 </resources>
