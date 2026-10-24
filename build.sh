@@ -42,6 +42,7 @@ ASSIST=false; [ "$(prop disable_assistant false)" = "true" ] && ASSIST=true
 CRYPTO=false; [ "$(prop show_crypto true)" = "true" ] && CRYPTO=true
 ANIMATION=false; [ "$(prop hide_animation false)" = "true" ] && ANIMATION=true
 SAVER=true; [ "$(prop own_screensaver true)" = "false" ] && SAVER=false
+GOOGLE=false; [ "$(prop keep_google_home false)" = "true" ] && GOOGLE=true
 
 rm -rf out && mkdir -p out/gen/io/freemytv out/classes
 cat > out/gen/io/freemytv/Config.java <<EOF
@@ -66,6 +67,7 @@ final class Config {
     static final boolean SHOW_CRYPTO = $CRYPTO;
     static final boolean HIDE_ANIMATION = $ANIMATION;
     static final boolean OWN_SCREENSAVER = $SAVER;
+    static final boolean KEEP_GOOGLE_HOME = $GOOGLE;
 }
 EOF
 

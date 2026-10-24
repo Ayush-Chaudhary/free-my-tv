@@ -342,6 +342,7 @@ final class HomeMode {
                 done++;
                 busy(c, Ui.trf("Turning off apps ({done}/{total})…", "done", done, "total", targets.size()));
                 if (!candidates.contains(pkg) || needed.contains(pkg) || owners.contains(pkg) || keptOff.contains(pkg)) continue;
+                if (spared(pkg, dream)) continue;
                 // The TV's home screen only once Google TV's setup app is off: its recovery screen would take Home.
                 if (pkg.equals(homePkg) && setupOn) {
                     AppLog.w("kept the TV's home screen on: Google TV's setup app is still on");
@@ -601,7 +602,7 @@ final class HomeMode {
                         && s.optBoolean("setupHome", true);
                 for (String pkg : order) {
                     if (!mayTurnOff(pkg) || !present.contains(pkg) || owners.contains(pkg) || wait.contains(pkg)) continue;
-                    if (!Config.OWN_SCREENSAVER && pkg.equals(packageOf(dream))) continue;   // the TV's screensaver stays on
+                    if (spared(pkg, dream)) continue;
                     if (disabledNow.contains(pkg)) {
                         if (!keptOff.contains(pkg)) disabled.add(pkg);
                         continue;
@@ -706,6 +707,15 @@ final class HomeMode {
         Matcher m = Pattern.compile("cname=([\\w.]+)").matcher(out);
         while (m.find()) owners.add(m.group(1));
         return owners;
+    }
+
+    /**
+     * Apps config.properties keeps on: the TV's screensaver (own_screensaver=false) and Google TV's home app, where
+     * Google Assistant opens movie and show pages (keep_google_home=true; RemoteKeyService keeps it off the screen).
+     */
+    private static boolean spared(String pkg, String dream) {
+        return (!Config.OWN_SCREENSAVER && pkg.equals(packageOf(dream)))
+                || (Config.KEEP_GOOGLE_HOME && pkg.equals(packageOf(GOOGLE_HOME)));
     }
 
     /** The recorded home screen of the TV, as {@link #realHome}. */
