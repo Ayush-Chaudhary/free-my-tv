@@ -224,6 +224,39 @@ final class Recs {
         return out;
     }
 
+    /**
+     * Movies and shows matching a search, with their details: those on the TV's apps first (with the title's own link
+     * when there is one), then the rest. Blocking: call it off the main thread.
+     */
+    List<Pick> search(String query) throws Exception {
+        JSONArray found = get("/search/multi?include_adult=false&language=" + lang() + "&query="
+                + URLEncoder.encode(query, "UTF-8")).getJSONArray("results");
+        List<Pick> on = new ArrayList<>(), off = new ArrayList<>();
+        for (int i = 0; i < found.length() && on.size() + off.size() < 12; i++) {
+            JSONObject o = found.getJSONObject(i);
+            String kind = o.optString("media_type");
+            if (!kind.equals("movie") && !kind.equals("tv")) continue;
+            List<Pick> one = new ArrayList<>();
+            add(one, o, kind);
+            if (one.isEmpty()) continue;
+            Pick p = one.get(0);
+            try {
+                fetchDetails(p);
+            } catch (Exception e) {
+                continue;
+            }
+            (p.pkg != null ? on : off).add(p);
+        }
+        for (Pick p : on) findLink(p);
+        on.addAll(off);
+        return on;
+    }
+
+    /** A title's photo at a small size (search results), straight from TMDB. */
+    static String smallImage(Pick p) {
+        return "https://image.tmdb.org/t/p/w780" + p.backdrop;
+    }
+
     /** The row on screen: its titles (and the next row's) get their details and photos ahead of the others. */
     void setActive(int tab, int row) {
         if (tab == activeTab && row == activeRow) return;

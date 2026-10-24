@@ -13,7 +13,13 @@ public class RemoteKeyService extends AccessibilityService {
         return RemoteKeys.onKey(this, event);
     }
 
-    @Override public void onAccessibilityEvent(AccessibilityEvent event) {}
+    /** The window in front ("package/class"), from the window changes this service listens to. */
+    static volatile String front = "";
+
+    @Override public void onAccessibilityEvent(AccessibilityEvent event) {
+        if (event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || event.getPackageName() == null) return;
+        front = event.getPackageName() + "/" + event.getClassName();
+    }
 
     @Override public void onInterrupt() {}
 }

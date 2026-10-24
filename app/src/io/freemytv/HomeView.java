@@ -2505,6 +2505,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     okDown = okHeld = false;
                 }
                 return true;
+            case KeyEvent.KEYCODE_SEARCH:     // the remote's mic, when it comes as a key: search, listening
+                if (down && e.getRepeatCount() == 0) HomeActivity.openSearch(activity, true);
+                return true;
             case KeyEvent.KEYCODE_BACK:
                 if (down) {
                     if (e.getRepeatCount() == 0) backDown = true;
@@ -2985,7 +2988,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 if (i >= others.size()) return "";
                 return label(others, i) + ", " + Ui.trf("{i} of {n}", "i", i + 1, "n", others.size());
             case Z_TOP:
-                if (i >= 3) return label(lightButtons, i - 3);
+                if (i >= TABS) return label(lightButtons, i - TABS);
                 return Ui.trf("{name}, tab {i} of {n}", "name", tabs()[i], "i", i + 1, "n", TABS);
             case Z_CARDS: return i < cards.size() ? pickText(cards.get(i)) : "";
             case Z_SHELF:

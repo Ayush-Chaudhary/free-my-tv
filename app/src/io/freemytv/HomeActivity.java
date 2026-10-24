@@ -55,10 +55,21 @@ public class HomeActivity extends Activity {
         super.onPause();
     }
 
+    /** Asks the home screen to open search, listening (the remote's mic, from the key service's process). */
+    static final String EXTRA_SEARCH = "io.freemytv.search";
+
     /** Home button pressed on the home screen: back to the entry state (focus on the first app, sheet closed). */
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        if (intent.getBooleanExtra(EXTRA_SEARCH, false)) {
+            openSearch(this, true);
+            return;
+        }
         if (home != null) home.reset(true);
+    }
+
+    static void openSearch(android.app.Activity a, boolean voice) {
+        a.startActivity(new Intent(a, SearchActivity.class).putExtra(SearchActivity.EXTRA_VOICE, voice));
     }
 
     @Override protected void onDestroy() {

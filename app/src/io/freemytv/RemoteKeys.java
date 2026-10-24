@@ -42,6 +42,7 @@ final class RemoteKeys {
 
     /** Opens the app for this key on its first press. True if the key is ours and in use (it is then consumed). */
     static boolean onKey(Context c, KeyEvent e) {
+        if (mic(c, e)) return true;
         if (!supported()) return false;
         // BUTTON_3 is also a game controller's button: keys from a gamepad or a joystick are left alone.
         int source = e.getSource();
@@ -68,6 +69,23 @@ final class RemoteKeys {
             Intent intent = launchIntent(c.getPackageManager(), pkg);
             AppLog.w("remote key " + e.getKeyCode() + " -> " + pkg + (intent == null ? " (not installed)" : ""));
             if (intent != null) c.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        }
+        return true;
+    }
+
+    /**
+     * The remote's mic on Free My TV's home screen (or its search): our search, listening, as Google TV's home does.
+     * Anywhere else it goes on to Google Assistant.
+     */
+    private static boolean mic(Context c, KeyEvent e) {
+        int key = e.getKeyCode();
+        if (key != KeyEvent.KEYCODE_SEARCH && key != KeyEvent.KEYCODE_VOICE_ASSIST && key != KeyEvent.KEYCODE_ASSIST) return false;
+        String front = RemoteKeyService.front;
+        if (!front.startsWith(c.getPackageName() + "/") || !(front.endsWith(".HomeActivity") || front.endsWith(".SearchActivity"))) return false;
+        if (e.getAction() == KeyEvent.ACTION_DOWN && e.getRepeatCount() == 0) {
+            AppLog.w("remote mic -> search");
+            c.startActivity(new Intent(c, HomeActivity.class).putExtra(HomeActivity.EXTRA_SEARCH, true)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
         }
         return true;
     }
