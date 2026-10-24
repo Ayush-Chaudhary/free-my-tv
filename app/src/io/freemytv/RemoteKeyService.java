@@ -17,7 +17,19 @@ public class RemoteKeyService extends AccessibilityService {
     }
 
     /** Google TV's home screen, when keep_google_home leaves its app on (for Google Assistant's movie and show pages). */
-    private static final String GOOGLE_HOME_SCREEN = "com.google.android.apps.tv.launcherx.home.HomeActivity";
+    private static final String GOOGLE_PACKAGE = "com.google.android.apps.tv.launcherx";
+    private static final String GOOGLE_HOME_SCREEN = GOOGLE_PACKAGE + ".home.HomeActivity";
+    /** Opening a title's page, Google TV's app also starts its home behind it, about half a second later (TCL G10). */
+    private static final long GOOGLE_PAGE_GRACE = 3000;
+    private static final long GOOGLE_RECHECK = 1500;
+    private static long googlePageAt;
+    private final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private final Runnable recheck = () -> {
+        if (front.endsWith("/" + GOOGLE_HOME_SCREEN) && ourHome()) {
+            AppLog.w("Google TV's home stayed: back to Free My TV");
+            goHome();
+        }
+    };
 
     /**
      * With keep_google_home, the TV gives the Home button to Google TV's home (a system app outranks the HOME role on
@@ -46,12 +58,19 @@ public class RemoteKeyService extends AccessibilityService {
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
         if (event.getEventType() != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED || event.getPackageName() == null) return;
         front = event.getPackageName() + "/" + event.getClassName();
+        if (!Config.KEEP_GOOGLE_HOME) return;
+        boolean googleHome = GOOGLE_HOME_SCREEN.contentEquals(event.getClassName() == null ? "" : event.getClassName());
+        long now = android.os.SystemClock.uptimeMillis();
+        if (!googleHome && GOOGLE_PACKAGE.contentEquals(event.getPackageName())) googlePageAt = now;
         // Google TV's home shown anyway (after the TV starts, leaving an app): back to ours. Its other screens (a
-        // title's page the Assistant opened) stay.
-        if (Config.KEEP_GOOGLE_HOME && GOOGLE_HOME_SCREEN.contentEquals(event.getClassName() == null ? "" : event.getClassName())
-                && ourHome()) {
+        // title's page the Assistant opened) stay, and so does the home it opens right behind such a page.
+        if (!googleHome || !ourHome()) return;
+        handler.removeCallbacks(recheck);
+        if (now - googlePageAt > GOOGLE_PAGE_GRACE) {
             AppLog.w("Google TV's home showed: back to Free My TV");
             goHome();
+        } else {
+            handler.postDelayed(recheck, GOOGLE_RECHECK);   // still there once a page had its moment: it's the home
         }
     }
 
