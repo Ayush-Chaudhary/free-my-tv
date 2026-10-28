@@ -184,6 +184,56 @@ final class Prefs {
 
     static void setTheme(String v) { put("theme", v); }
 
+    /** Trailers on the home screen: "on" (with sound), "muted" (silent until Up) or "off". */
+    static String trailers() {
+        String v = sp().getString("trailers", "muted");
+        return v.equals("on") || v.equals("off") ? v : "muted";
+    }
+
+    static void setTrailers(String v) { put("trailers", v); }
+
+    /** What actually plays. Low-memory mode forces trailers off; the saved choice stays for when it is turned off. */
+    static String trailersEffective() {
+        return lowMemory() ? "off" : trailers();
+    }
+
+    /** Flat glass, no trailer player, snapped motion: for a TV that is short on memory. */
+    static boolean lowMemory() { return sp().getBoolean("lowMemory", false); }
+
+    static void setLowMemory(boolean on) { put("lowMemory", on); }
+
+    static void setKeepGoogleHome(boolean on) {   // committed: the main process reads it in the next verify
+        sp().edit().putBoolean("keepGoogleHome", on).commit();
+        version++;
+    }
+
+    private static final int RECENT_SEARCHES = 3;
+
+    /** The last few searches, newest first, for the idle search screen. */
+    static java.util.List<String> recentSearches() {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        String saved = sp().getString("recentSearches", "");
+        for (String part : saved.split("\n")) {
+            part = part.trim();
+            if (!part.isEmpty() && out.size() < RECENT_SEARCHES) out.add(part);
+        }
+        return out;
+    }
+
+    static void rememberSearch(String query) {
+        String q = query == null ? "" : query.trim();
+        if (q.isEmpty()) return;
+        java.util.List<String> list = new java.util.ArrayList<>();
+        list.add(q);
+        for (String older : recentSearches()) if (!older.equalsIgnoreCase(q)) list.add(older);
+        StringBuilder saved = new StringBuilder();
+        for (int i = 0; i < list.size() && i < RECENT_SEARCHES; i++) {
+            if (i > 0) saved.append('\n');
+            saved.append(list.get(i).replace('\n', ' '));
+        }
+        put("recentSearches", saved.toString());
+    }
+
     // MARK: - City
 
     static String city() { return sp().getString("city", Place.city()).trim(); }

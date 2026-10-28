@@ -60,10 +60,17 @@ final class Recs {
     static final class Row {
         final String title;
         final List<Pick> picks;
+        /** Top 10: a rank numeral sits in the gutter before each card. */
+        final boolean ranked;
 
         Row(String title, List<Pick> picks) {
+            this(title, picks, false);
+        }
+
+        Row(String title, List<Pick> picks, boolean ranked) {
             this.title = title;
             this.picks = picks;
+            this.ranked = ranked;
         }
     }
 
@@ -81,7 +88,7 @@ final class Recs {
     private static final int ANIMATION = 16;
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 6;
+    private static final int CACHE_VERSION = 7;
     /** Genres that get their own row, in order. Movies: Action, Comedy, Drama, Thriller, Horror, Science Fiction, Romance, Animation. */
     private static final int[] MOVIE_GENRES = {28, 35, 18, 53, 27, 878, 10749, 16};
     /** Shows: Action & Adventure, Comedy, Drama, Crime, Sci-Fi & Fantasy, Mystery, Animation, Reality. */
@@ -387,7 +394,7 @@ final class Recs {
                 if (list.size() >= n) break;
                 if (!p.detailed || (p.pkg != null && have.computeIfAbsent(p.pkg, this::installed))) list.add(p);
             }
-            if (!list.isEmpty()) out.add(new Row(r.title, list));
+            if (!list.isEmpty()) out.add(new Row(r.title, list, r.ranked));
         }
         return out;
     }
@@ -775,7 +782,7 @@ final class Recs {
             List<Pick> top = new ArrayList<>();
             take(top, all, movie ? hotMovies : hotShows);
             if (top.size() < MAX_CARDS) discoverInto(top, all, kind, "&vote_count.gte=" + (movie ? 200 : 100), common);
-            if (!top.isEmpty()) tabRows.add(new Row(movie ? Ui.tr("Top 10 Movies") : Ui.tr("Top 10 Shows"), top));
+            if (!top.isEmpty()) tabRows.add(new Row(movie ? Ui.tr("Top 10 Movies today") : Ui.tr("Top 10 Shows today"), top, true));
             List<Pick> fresh = new ArrayList<>();
             take(fresh, all, movie ? newMovies : newShows);
             if (fresh.isEmpty()) {
@@ -783,7 +790,7 @@ final class Recs {
                         ? "&vote_count.gte=30&primary_release_date.gte=" + day(-365) + "&primary_release_date.lte=" + day(0)
                         : "&vote_count.gte=20&air_date.gte=" + day(-90) + "&air_date.lte=" + day(0), common);
             }
-            if (!fresh.isEmpty()) tabRows.add(new Row(Ui.tr("New on your apps"), fresh));
+            if (!fresh.isEmpty()) tabRows.add(new Row(Ui.tr("New this week"), fresh));
             Map<Integer, String> names;
             try {
                 names = genreNames(kind);
@@ -998,6 +1005,21 @@ final class Recs {
         Set<String> seen = new HashSet<>();
         for (String[] s : SERVICES) {
             if (HomeApps.launchIntent(c.getPackageManager(), s[2]) != null && seen.add(s[1])) out.add(new String[] {s[1], SERVICE_NAME.get(s[1])});
+        }
+        return out;
+    }
+
+    /**
+     * Known streaming apps that are not installed, as {key, name}. Search can offer the Play Store for a name the
+     * person typed. Only this list: nothing is invented.
+     */
+    static List<String[]> catalog(Context c) {
+        List<String[]> out = new ArrayList<>();
+        java.util.Set<String> seen = new HashSet<>();
+        for (String[] s : SERVICES) {
+            if (HomeApps.launchIntent(c.getPackageManager(), s[2]) == null && seen.add(s[1])) {
+                out.add(new String[] {s[1], SERVICE_NAME.get(s[1])});
+            }
         }
         return out;
     }
@@ -1338,7 +1360,8 @@ final class Recs {
             synchronized (images) {
                 images.put(p.backdrop, backdrop);
                 if (poster != null) posters.put(p.backdrop, poster);
-                while (images.size() > (forLight ? Prefs.cards() + 7 : 4)) images.remove(images.keySet().iterator().next());
+                int cap = Prefs.lowMemory() ? 4 : (forLight ? Prefs.cards() + 7 : 4);
+                while (images.size() > cap) images.remove(images.keySet().iterator().next());
                 posters.keySet().retainAll(images.keySet());
             }
             notifyListeners();
@@ -1415,7 +1438,7 @@ final class Recs {
                 for (Row r : tab) {
                     JSONArray list = new JSONArray();
                     for (Pick p : r.picks) list.put(pickJson(p));
-                    tabJson.put(new JSONObject().put("title", r.title).put("picks", list));
+                    tabJson.put(new JSONObject().put("title", r.title).put("ranked", r.ranked).put("picks", list));
                 }
                 rowsJson.put(tabJson);
             }
@@ -1469,7 +1492,7 @@ final class Recs {
                     if (o == null) continue;
                     JSONArray list = o.optJSONArray("picks");
                     List<Pick> picks = list == null ? new ArrayList<>() : parse(list);
-                    if (!picks.isEmpty()) tabRows.add(new Row(o.optString("title"), picks));
+                    if (!picks.isEmpty()) tabRows.add(new Row(o.optString("title"), picks, o.optBoolean("ranked")));
                 }
             }
             out.add(tabRows);

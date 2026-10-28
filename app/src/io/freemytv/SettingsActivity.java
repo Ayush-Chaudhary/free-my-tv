@@ -13,6 +13,7 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Rect;
 import android.graphics.RectF;
+import android.graphics.Shader;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -61,8 +62,15 @@ public class SettingsActivity extends Activity {
         Ui.init(this);
         SleepTimer.listen(this);   // :home may start here, from the launcher icon
         SleepTimer.check(this);
+        if (getIntent().getBooleanExtra("demo", false)) {
+            String theme = getIntent().getStringExtra("theme");
+            if ("light".equals(theme) || "dark".equals(theme)) Prefs.setTheme(theme);
+        }
         view = new SettingsView(this);
         setContentView(view);
+        if (getIntent().getBooleanExtra("demo", false)) {
+            view.showDemo(getIntent().getIntExtra("section", 0), getIntent().getIntExtra("row", 0));
+        }
     }
 
     /**
@@ -95,6 +103,11 @@ public class SettingsActivity extends Activity {
         super.onNewIntent(intent);
         if (openFireHome(intent)) return;
         setIntent(intent);
+        if (view != null && intent.getBooleanExtra("demo", false)) {
+            String theme = intent.getStringExtra("theme");
+            if ("light".equals(theme) || "dark".equals(theme)) Prefs.setTheme(theme);
+            view.showDemo(intent.getIntExtra("section", 0), intent.getIntExtra("row", 0));
+        }
     }
 
     @Override protected void onPause() {
@@ -195,7 +208,19 @@ public class SettingsActivity extends Activity {
         private final RectF tmp = new RectF(), rowRect = new RectF(), focusBox = new RectF();
         private JSONObject state = new JSONObject(), recs = new JSONObject();
         private boolean hasKey;
-        private int screen = MAIN, focus;
+        private int screen = MAIN, focus, section, backSection, backRow;
+        private boolean onRail;
+        private static final int GROUP_VISIBLE = 7;
+        private static final int G_HOME = 1, G_SHELF = 2, G_TOP = 3, G_THEME = 4, G_LANG = 5, G_SOUNDS = 6;
+        private static final int G_TMDB = 10, G_CARDS = 11, G_FROM = 12, G_TRAILERS = 13, G_WATCH = 14;
+        private static final int G_WEATHER = 20, G_CITY = 21, G_TEMP = 22, G_FORECAST = 23, G_PLAYING = 24, G_QUOTES = 25, G_COIN = 26;
+        private static final int G_PREVIEW = 40, G_PHOTOS = 41, G_SLEEP = 42, G_REMOTE = 50;
+        private static final int G_KEEP = 70, G_LOW = 71, G_UPDATES = 72, G_TV = 73;
+        private static final String[] LOOKS = {"dark", "light"}, TRAILER_VALUES = {"on", "muted", "off"};
+        private Shader settingsBg;
+        private boolean settingsBgNight;
+        private int settingsBgH;
+        private Paint page;
         private boolean running, okDown, backDown, wasBusy;
         private StaticLayout errorLayout;   // the last error, wrapped (rebuilt only when it changes)
         private Toast whyToast;   // why the focused option is unavailable
@@ -285,16 +310,12 @@ public class SettingsActivity extends Activity {
         private String rowValueText(int row) {
             switch (screen) {
                 case MAIN: {
-                    if (row == 0) {
-                        String busyText = busyText();
-                        String value = busy() ? (busyText.isEmpty() ? Ui.tr("Starting…") : busyText)
-                                : freeActive() ? "Free My TV" : Ui.tr("Original");
-                        return Ui.trf("Home Screen, {mode}", "mode", value);
-                    }
-                    String[] names = {Ui.tr("Screensaver, preview"), Ui.tr("Home Settings"),
-                            Ui.tr("Shelf"), Ui.tr("Top Buttons"), Ui.tr("Remote Buttons"), Ui.tr("Sleep Timer"),
-                            Ui.tr("TV Settings")};
-                    return row - 1 < names.length ? names[row - 1] : "";
+                    if (onRail) return sectionName(row);
+                    int[] ids = groupIds();
+                    int at = pickScroll + row;
+                    if (at >= ids.length) return "";
+                    String value = groupValue(ids[at]);
+                    return value.isEmpty() ? groupLabel(ids[at]) : groupLabel(ids[at]) + ", " + value;
                 }
                 case HOME_CHOICE: {
                     String name = row == 0 ? "Free My TV, " + Ui.tr("no ads, with the new screensaver")
@@ -346,8 +367,20 @@ public class SettingsActivity extends Activity {
         private RectF rowBox(int row) {
             float top, height;
             if (screen == MAIN) {
-                top = MAIN_TOP + row * (ROW_H + MAIN_GAP);
-                height = ROW_H;
+                if (onRail) {
+                    top = Tokens.LAYOUT_SETTINGSRAILTOP + row * (Tokens.LAYOUT_SETTINGSROWH + 8);
+                    height = Tokens.LAYOUT_SETTINGSROWH;
+                    focusBox.set(Tokens.LAYOUT_SETTINGSRAILX * k, top * k,
+                            (Tokens.LAYOUT_SETTINGSRAILX + Tokens.LAYOUT_SETTINGSRAILW) * k, (top + height) * k);
+                } else {
+                    int[] ids = groupIds();
+                    int at = Math.min(pickScroll + row, Math.max(0, ids.length - 1));
+                    top = groupTop(row);
+                    height = ids.length == 0 ? Tokens.LAYOUT_SETTINGSROWH : groupRowH(ids[at]);
+                    focusBox.set(Tokens.LAYOUT_SETTINGSLISTX * k, top * k,
+                            (Tokens.LAYOUT_SETTINGSLISTX + Tokens.LAYOUT_SETTINGSLISTW) * k, (top + height) * k);
+                }
+                return focusBox;
             } else if (screen == HOME_CHOICE) {
                 top = LIST_TOP + 20 + row * (CHOICE_H + ROW_GAP);
                 height = CHOICE_H;
@@ -408,7 +441,8 @@ public class SettingsActivity extends Activity {
             rowValue = Ui.text(Ui.regular, 28 * k, 0x8CFFFFFF);
             rowValue.setTextAlign(Paint.Align.RIGHT);
             rowValueFit = new TextPaint(rowValue);
-            rowSub = Ui.text(Ui.regular, 23 * k, 0x8CFFFFFF);
+            rowSub = Ui.text(Ui.regular, Tokens.TYPE_CAPTION * k, 0x8CFFFFFF);
+            page = new Paint(Paint.ANTI_ALIAS_FLAG);
             header = Ui.text(Ui.semibold, 21 * k, 0x73FFFFFF);
             header.setLetterSpacing(0.06f);
             cellLabel = Ui.text(Ui.regular, 25 * k, 0xD9FFFFFF);
@@ -448,7 +482,7 @@ public class SettingsActivity extends Activity {
 
         private int rowCount() {
             switch (screen) {
-                case MAIN: return 8;
+                case MAIN: return onRail ? 6 : Math.min(GROUP_VISIBLE, Math.max(0, groupIds().length - pickScroll));
                 case HOME_CHOICE: return 2;
                 case HOME_SETTINGS: return Math.min(SETTINGS_VISIBLE, settingLabels().length);
                 case PICKER: return Math.min(PICK_VISIBLE, pickLabels.size());
@@ -477,13 +511,23 @@ public class SettingsActivity extends Activity {
                 scene.advance(seconds);
             }
             scene.drawBackground(c);
-
-            // On the left: big symbol, title, description.
-            float cx = 500 * k;
-            Symbols.draw(getContext(), c, "sparkles", cx, 400 * k, 150 * k, 0xEBFFFFFF);
-            c.drawText("Free My TV", cx, 612 * k, title);
-            c.drawText(Ui.tr("Your TV's home screen and screensaver"), cx, 660 * k, subtitle);
-            c.drawText(versionName(getContext()), cx, 704 * k, version);
+            if (screen == MAIN) {
+                boolean dark = settingsNight();
+                if (settingsBg == null || dark != settingsBgNight || settingsBgH != h) {
+                    settingsBgNight = dark;
+                    settingsBgH = h;
+                    settingsBg = Ui.gradient(h, Tokens.bgTop(dark), Tokens.bgBottom(dark));
+                }
+                page.setShader(settingsBg);
+                c.drawRect(0, 0, w, h, page);
+                page.setShader(null);
+            } else {
+                float cx = 500 * k;
+                Symbols.draw(getContext(), c, "sparkles", cx, 400 * k, 150 * k, 0xEBFFFFFF);
+                c.drawText("Free My TV", cx, 612 * k, title);
+                c.drawText(Ui.tr("Your TV's home screen and screensaver"), cx, 660 * k, subtitle);
+                c.drawText(versionName(getContext()), cx, 704 * k, version);
+            }
 
             if (screen == MAIN) drawMain(c, seconds); else if (screen == HOME_CHOICE) drawChoice(c); else if (screen == PICKER) drawPicker(c); else if (screen == SHELF_EDIT) drawShelfEditor(c);
             else if (screen == TMDB_KEY) drawKey(c);
@@ -492,67 +536,411 @@ public class SettingsActivity extends Activity {
         }
 
         private void drawMain(Canvas c, float seconds) {
-            boolean working = busy();
-            String busyText = busyText();
-            String mode = freeActive() ? "Free My TV" : Ui.tr("Original");
-            String[] labels = {Ui.tr("Home Screen"), Ui.tr("Screensaver"),
-                    Ui.tr("Home Settings"), Ui.tr("Shelf"), Ui.tr("Top Buttons"),
-                    Ui.tr("Remote Buttons"), Ui.tr("Sleep Timer"), Ui.tr("TV Settings")};
-            String[] values = {working ? "" : mode, Ui.tr("Preview"), "", "", "", "", "", ""};
-            for (int i = 0; i < labels.length; i++) {
-                float y = (MAIN_TOP + i * (ROW_H + MAIN_GAP)) * k;
-                rowRect.set(LIST_X * k, y, LIST_R * k, y + ROW_H * k);
-                float f = drawRowBackground(c, i);
+            boolean dark = settingsNight();
+            int ink = dark ? Tokens.INK_DARK : Tokens.INK_LIGHT;
+            int dim = dark ? Tokens.INK_SECONDARY_DARK : Tokens.INK_SECONDARY_LIGHT;
+            title.setColor(ink);
+            title.setTextAlign(Paint.Align.LEFT);
+            c.drawText(Ui.tr("Settings"), 100 * k, 140 * k, title);
+            title.setTextAlign(Paint.Align.CENTER);
+            title.setColor(0xFFFFFFFF);
+            for (int i = 0; i < 6; i++) {
+                float y = (Tokens.LAYOUT_SETTINGSRAILTOP + i * (Tokens.LAYOUT_SETTINGSROWH + 8)) * k;
+                rowRect.set(Tokens.LAYOUT_SETTINGSRAILX * k, y,
+                        (Tokens.LAYOUT_SETTINGSRAILX + Tokens.LAYOUT_SETTINGSRAILW) * k, y + Tokens.LAYOUT_SETTINGSROWH * k);
+                float f = onRail ? drawRowBackground(c, i) : (i == section ? 0.18f : 0);
+                if (!onRail && i == section) {
+                    white.setColor(dark ? 0xFFFFFFFF : 0xFF1D1D1F);
+                    white.setAlpha(dark ? 28 : 22);
+                    c.drawRoundRect(rowRect, 18 * k, 18 * k, white);
+                    white.setColor(0xFFFFFFFF);
+                    white.setAlpha(255);
+                }
+                rowLabel.setColor(f > 0.5f ? Tokens.INK_LIGHT : ink);
+                c.drawText(sectionName(i), rowRect.left + 28 * k, rowRect.centerY() + Ui.halfCap(rowLabel), rowLabel);
+            }
+            int[] ids = groupIds();
+            int shown = Math.min(GROUP_VISIBLE, Math.max(0, ids.length - pickScroll));
+            float bottom = Tokens.LAYOUT_SETTINGSLISTTOP;
+            for (int i = 0; i < shown; i++) {
+                int id = ids[pickScroll + i];
+                float y = groupTop(i) * k;
+                float rh = groupRowH(id) * k;
+                rowRect.set(Tokens.LAYOUT_SETTINGSLISTX * k, y, (Tokens.LAYOUT_SETTINGSLISTX + Tokens.LAYOUT_SETTINGSLISTW) * k, y + rh);
+                float f = onRail ? 0 : drawRowBackground(c, i);
                 boolean off = unavailable(i) != null;
-                int ink = off ? blend(0x73FFFFFF, 0x731C1C1E, f) : blend(0xF2FFFFFF, INK, f);
-                rowLabel.setColor(ink);
-                float base = rowRect.centerY() + Ui.halfCap(rowLabel);
-                c.drawText(labels[i], rowRect.left + 30 * k, base, rowLabel);
-                float right = rowRect.right - 30 * k;
-                if (off) {
-                    rowValue.setColor(blend(0x59FFFFFF, 0x591C1C1E, f));
-                    c.drawText(Ui.tr("Unavailable"), right, base, rowValue);
-                } else if (i >= 2) {
-                    float cw = Symbols.width(getContext(), "chevron_right", 22 * k);
-                    Symbols.draw(getContext(), c, "chevron_right", right - cw / 2, rowRect.centerY(), 22 * k, blend(0x66FFFFFF, 0x991C1C1E, f));
-                } else if (i == 0 && working) {
-                    // Switching: the current step in place of the value, with the spinning arc.
-                    String text = busyText.isEmpty() ? Ui.tr("Starting…") : busyText;
-                    rowValue.setColor(blend(0xB3FFFFFF, 0xB31C1C1E, f));
-                    String shown = TextUtils.ellipsize(text, new TextPaint(rowValue), 470 * k, TextUtils.TruncateAt.END).toString();
-                    c.drawText(shown, right, base, rowValue);
-                    float sx = right - rowValue.measureText(shown) - 26 * k;
-                    spinner.setColor(blend(0xFFFFFFFF, INK, f));
-                    Ui.spinner(c, sx, rowRect.centerY(), 12 * k, seconds * 1.3f, spinner);
-                } else {
-                    rowValue.setColor(blend(0x8CFFFFFF, 0x8C1C1C1E, f));
-                    c.drawText(values[i], right, base, rowValue);
+                rowLabel.setColor(f > 0.5f ? Tokens.INK_LIGHT : (off ? dim : ink));
+                rowSub.setColor(f > 0.5f ? Tokens.INK_SECONDARY_LIGHT : dim);
+                rowValue.setColor(f > 0.5f ? Tokens.INK_SECONDARY_LIGHT : dim);
+                String detail = groupDetail(id);
+                float base = detail.isEmpty() ? rowRect.centerY() + Ui.halfCap(rowLabel) : rowRect.top + 42 * k;
+                c.drawText(groupLabel(id), rowRect.left + 28 * k, base, rowLabel);
+                if (!detail.isEmpty()) drawWrapped(c, detail, rowRect.left + 28 * k, rowRect.top + 62 * k,
+                        rowRect.width() - 56 * k, new TextPaint(rowSub), 2);
+                String value = off ? Ui.tr("Unavailable") : groupValue(id);
+                if (!value.isEmpty()) c.drawText(value, rowRect.right - 28 * k, base, rowValue);
+                bottom = groupTop(i) + groupRowH(id);
+            }
+            dimPaint(c, dim);
+            float hintY = 1020 * k;
+            if (!onRail && groupId(focus) == G_KEEP) hintY = drawKeepExplain(c, ink, dim);
+            c.drawText(Ui.tr("◀ ▶ change · OK opens"), Tokens.LAYOUT_SETTINGSLISTX * k, hintY, rowSub);
+            if (onRail || groupId(focus) != G_KEEP) {
+                if (section == 5) {
+                    String error = state.optString("error");
+                    if (!error.isEmpty()) c.drawText(TextUtils.ellipsize(error, new TextPaint(warn), 900 * k, TextUtils.TruncateAt.END).toString(),
+                            Tokens.LAYOUT_SETTINGSLISTX * k, Math.min(980, bottom + 48) * k, warn);
                 }
             }
+            if (busy() && section == 0) {
+                spinner.setColor(ink);
+                Ui.spinner(c, (Tokens.LAYOUT_SETTINGSLISTX + Tokens.LAYOUT_SETTINGSLISTW - 48) * k, 160 * k, 12 * k, seconds * 1.3f, spinner);
+            }
+        }
 
-            float y = (MAIN_TOP + labels.length * (ROW_H + MAIN_GAP) + 20) * k;
-            String error = state.optString("error");
-            if (working && busyText.equals(Ui.tr("Accept “Allow USB debugging?” on the TV (tick “Always allow”)."))) {
-                c.drawText(Ui.tr("On the TV: tick “Always allow” and press OK."),
-                        LIST_X * k + 30 * k, y, warn);
-                y += 46 * k;
-            } else if (!working && !error.isEmpty()) {
-                // The whole message, on up to five lines: some say what to do (the Wi-Fi one, #14).
-                int width = Math.round(760 * k);
-                if (errorLayout == null || !error.equals(errorShown) || errorLayout.getWidth() != width) {
-                    errorShown = error;
-                    errorLayout = StaticLayout.Builder.obtain(error, 0, error.length(), new TextPaint(warn), width)
-                            .setMaxLines(5).setEllipsize(TextUtils.TruncateAt.END).build();
+        private void dimPaint(Canvas c, int dim) {
+            rowSub.setColor(dim);
+        }
+
+        /** The panel under the list. Returns where the hint line should sit, below the panel. */
+        private float drawKeepExplain(Canvas c, int ink, int dim) {
+            float x = Tokens.LAYOUT_SETTINGSLISTX * k, r = (Tokens.LAYOUT_SETTINGSLISTX + Tokens.LAYOUT_SETTINGSLISTW) * k;
+            rowSub.setColor(dim);
+            String body = Ui.tr("Google TV's own home app stays on, so Google Assistant can open movie and show pages. Your Home button still brings you here.")
+                    + "\n" + Ui.tr("Off: Google TV's home stays switched off, and asking for a title opens it in this app's search instead.")
+                    + "\n" + Ui.tr("Free My TV watches only for Google TV's home and title pages. Nothing is uninstalled either way.");
+            int width = Math.max(1, Math.round(r - x - 56 * k));
+            StaticLayout text = StaticLayout.Builder.obtain(body, 0, body.length(), new TextPaint(rowSub), width)
+                    .setLineSpacing(6 * k, 1).setIncludePad(false).build();
+            float y = 700 * k;
+            float panelH = 78 * k + text.getHeight();
+            if (y + panelH > h - 56 * k) y = Math.max(520 * k, h - 56 * k - panelH);
+            rowRect.set(x, y, r, y + panelH);
+            white.setAlpha(settingsNight() ? 36 : 230);
+            c.drawRoundRect(rowRect, Tokens.RADIUS_PANEL * k, Tokens.RADIUS_PANEL * k, white);
+            white.setAlpha(255);
+            rowLabel.setColor(ink);
+            c.drawText(Ui.tr("What this does"), x + 28 * k, y + 48 * k, rowLabel);
+            c.save();
+            c.translate(x + 28 * k, y + 70 * k);
+            text.draw(c);
+            c.restore();
+            return Math.min(h - 28 * k, y + panelH + 40 * k);
+        }
+
+        /** Up to maxLines, wrapping instead of cutting the sentence off. */
+        private void drawWrapped(Canvas c, String text, float x, float y, float width, TextPaint paint, int maxLines) {
+            int w = Math.max(1, Math.round(width));
+            StaticLayout layout = StaticLayout.Builder.obtain(text, 0, text.length(), paint, w)
+                    .setMaxLines(maxLines).setEllipsize(TextUtils.TruncateAt.END).setIncludePad(false).build();
+            c.save();
+            c.translate(x, y);
+            layout.draw(c);
+            c.restore();
+        }
+
+        void showDemo(int sec, int row) {
+            section = Math.max(0, Math.min(5, sec));
+            onRail = false;
+            focus = row;
+            AppLog.w("demo settings " + section + " " + focus);
+            pickScroll = 0;
+            settingsBg = null;
+            invalidate();
+        }
+
+        private void rememberGroup() {
+            backSection = section;
+            backRow = onRail ? 0 : focus;
+        }
+
+        private void returnToGroup() {
+            screen = MAIN;
+            section = backSection;
+            onRail = false;
+            focus = backRow;
+            pickScroll = 0;
+            whyRows = null;
+        }
+
+        private void moveGroup(int dir) {
+            if (onRail) {
+                if (dir > 0) {
+                    onRail = false;
+                    focus = 0;
+                    pickScroll = 0;
                 }
-                c.save();
-                c.translate(LIST_X * k + 30 * k, y - errorLayout.getLineBaseline(0));
-                errorLayout.draw(c);
-                c.restore();
-                y += errorLayout.getLineBaseline(errorLayout.getLineCount() - 1) - errorLayout.getLineBaseline(0) + 46 * k;
+                return;
             }
-            y = drawComparison(c, y);
-            y = drawRecs(c, y + 26 * k);
-            drawNotices(c, y + 40 * k);
+            if (dir < 0) {
+                onRail = true;
+                focus = section;
+                return;
+            }
+            adjustGroup(dir);
+        }
+
+        private void activateGroup() {
+            int id = groupId(focus);
+            if (id == G_HOME) {
+                if (busy()) return;
+                rememberGroup();
+                screen = HOME_CHOICE;
+                focus = freeActive() ? 0 : 1;
+            } else if (id == G_SHELF) {
+                rememberGroup();
+                openShelfEditor(false);
+            } else if (id == G_TOP) {
+                rememberGroup();
+                openShelfEditor(true);
+            } else if (id == G_LANG) {
+                rememberGroup();
+                openPicker(PICK_LANGUAGE);
+            } else if (id == G_TMDB) {
+                rememberGroup();
+                openKeyScreen();
+            } else if (id == G_FROM) {
+                rememberGroup();
+                services.clear();
+                services.addAll(Recs.installedServices(getContext()));
+                screen = PICK_FROM;
+                pickScroll = 0;
+                focus = 0;
+            } else if (id == G_CITY) {
+                askCity();
+            } else if (id == G_PHOTOS) {
+                askRemovePhotos();
+            } else if (id == G_PREVIEW) {
+                pause();
+                activity.showPreview();
+            } else if (id == G_SLEEP) {
+                rememberGroup();
+                pickScroll = 0;
+                screen = POWER;
+                focus = 0;
+            } else if (id == G_UPDATES) {
+                updateNow();
+            } else if (id == G_TV) {
+                activity.startActivity(new Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            } else if (id >= G_REMOTE && id < G_REMOTE + Prefs.KEYS.length && RemoteKeys.supported()) {
+                rememberGroup();
+                loadApps();
+                openPicker(id - G_REMOTE + 1);
+            } else {
+                adjustGroup(1);
+            }
+        }
+
+        private void adjustGroup(int dir) {
+            if (unavailable(focus) != null && groupId(focus) != G_PLAYING) return;
+            int id = groupId(focus);
+            if (id == G_THEME) {
+                int at = java.util.Arrays.asList(LOOKS).indexOf(Prefs.theme());
+                if (at < 0) at = dir > 0 ? -1 : 0;
+                Prefs.setTheme(LOOKS[(at + dir + LOOKS.length) % LOOKS.length]);
+                settingsBg = null;
+                SleepOverlay.update(getContext());
+            } else if (id == G_SOUNDS) Prefs.setSounds(!Prefs.sounds());
+            else if (id == G_CARDS) {
+                int n = Prefs.cards() - 3, span = Recs.MAX_CARDS - 2;
+                Prefs.setCards(3 + (n + dir + span) % span);
+            } else if (id == G_TRAILERS && !Prefs.lowMemory()) {
+                int at = java.util.Arrays.asList(TRAILER_VALUES).indexOf(Prefs.trailers());
+                if (at < 0) at = 1;
+                Prefs.setTrailers(TRAILER_VALUES[(at + dir + TRAILER_VALUES.length) % TRAILER_VALUES.length]);
+            } else if (id == G_WATCH) Prefs.setSaverWatch(!Prefs.saverWatch());
+            else if (id == G_WEATHER) Prefs.setWeather(!Prefs.weather());
+            else if (id == G_TEMP) {
+                int at = java.util.Arrays.asList(UNITS).indexOf(Prefs.temperature());
+                Prefs.setTemperature(UNITS[(at + dir + UNITS.length) % UNITS.length]);
+            } else if (id == G_FORECAST) Prefs.setForecast(Prefs.forecast().equals("days") ? "hours" : "days");
+            else if (id == G_PLAYING) {
+                if (unavailable(focus) != null && !Prefs.nowPlaying()) return;
+                Prefs.setNowPlaying(!Prefs.nowPlaying());
+                HomeMode.nowPlayingAccess(getContext());
+            } else if (id == G_QUOTES) Prefs.setQuotes(!Prefs.quotes());
+            else if (id == G_LOW) Prefs.setLowMemory(!Prefs.lowMemory());
+            else if (id == G_KEEP) {
+                Prefs.setKeepGoogleHome(!Prefs.keepGoogleHome());
+                HomeMode.ensureRemoteService(getContext(), 0);
+                HomeMode.verify(getContext());
+            } else if (id == G_PHOTOS && !Photos.files(getContext()).isEmpty()) Prefs.setPhotos(!Prefs.photos());
+            else if (id >= G_COIN && id < G_COIN + 4 && Prefs.quotes()) Prefs.setCoin(id - G_COIN, !Prefs.coin(id - G_COIN));
+            HomeData.get(getContext()).settingsChanged();
+        }
+
+        private boolean settingsNight() {
+            HomeData.Weather wx = HomeData.get(getContext()).weather;
+            return HomeData.isNight(Prefs.theme(), System.currentTimeMillis(), wx.sunrise, wx.sunset);
+        }
+
+        private String sectionName(int i) {
+            switch (i) {
+                case 0: return Ui.tr("Home screen");
+                case 1: return Ui.tr("Picks & trailers");
+                case 2: return Ui.tr("Widgets");
+                case 3: return Ui.tr("Screensaver & bedtime");
+                case 4: return Ui.tr("Remote");
+                default: return Ui.tr("System & safety");
+            }
+        }
+
+        private int[] groupIds() {
+            List<Integer> ids = new ArrayList<>();
+            switch (section) {
+                case 0:
+                    ids.add(G_HOME); ids.add(G_SHELF); ids.add(G_TOP); ids.add(G_THEME); ids.add(G_LANG); ids.add(G_SOUNDS);
+                    break;
+                case 1:
+                    ids.add(G_TMDB); ids.add(G_CARDS); ids.add(G_FROM); ids.add(G_TRAILERS); ids.add(G_WATCH);
+                    break;
+                case 2:
+                    ids.add(G_WEATHER); ids.add(G_CITY); ids.add(G_TEMP); ids.add(G_FORECAST); ids.add(G_PLAYING); ids.add(G_QUOTES);
+                    ids.add(G_COIN); ids.add(G_COIN + 1); ids.add(G_COIN + 2);
+                    if (dollar()) ids.add(G_COIN + 3);
+                    break;
+                case 3:
+                    ids.add(G_PREVIEW); ids.add(G_PHOTOS); ids.add(G_SLEEP);
+                    break;
+                case 4:
+                    if (!RemoteKeys.supported()) ids.add(G_REMOTE);
+                    else for (int i = 0; i < Prefs.KEYS.length && i < keyLabels().length; i++) ids.add(G_REMOTE + i);
+                    break;
+                default:
+                    ids.add(G_KEEP); ids.add(G_LOW); ids.add(G_UPDATES); ids.add(G_TV);
+                    break;
+            }
+            int[] out = new int[ids.size()];
+            for (int i = 0; i < ids.size(); i++) out[i] = ids.get(i);
+            return out;
+        }
+
+        private int groupId(int visible) {
+            int[] ids = groupIds();
+            int at = pickScroll + visible;
+            return at >= 0 && at < ids.length ? ids[at] : -1;
+        }
+
+        private float groupRowH(int id) {
+            return id == G_TRAILERS || id == G_LOW || id == G_KEEP ? 128 : Tokens.LAYOUT_SETTINGSROWH;
+        }
+
+        private float groupTop(int visible) {
+            int[] ids = groupIds();
+            float y = Tokens.LAYOUT_SETTINGSLISTTOP;
+            for (int i = 0; i < visible; i++) {
+                int at = pickScroll + i;
+                if (at < 0 || at >= ids.length) break;
+                y += groupRowH(ids[at]) + 8;
+            }
+            return y;
+        }
+
+        private String groupNeed(int id) {
+            if (id == G_KEEP && !RemoteKeys.keepGooglePossible()) return Capabilities.NEED_REMOTE_BUTTONS;
+            if (id == G_PLAYING) return Capabilities.NEED_LISTENER;
+            if ((id == G_REMOTE || (id > G_REMOTE && id < G_KEEP)) && !RemoteKeys.supported()) return Capabilities.NEED_REMOTE_BUTTONS;
+            return null;
+        }
+
+        private String groupLabel(int id) {
+            switch (id) {
+                case G_HOME: return Ui.tr("Home Screen");
+                case G_SHELF: return Ui.tr("Shelf");
+                case G_TOP: return Ui.tr("Top Buttons");
+                case G_THEME: return Ui.tr("Theme");
+                case G_LANG: return Ui.tr("Language");
+                case G_SOUNDS: return Ui.tr("Navigation sounds");
+                case G_TMDB: return Ui.tr("TMDB key");
+                case G_CARDS: return Ui.tr("Picks per tab");
+                case G_FROM: return Ui.tr("Picks from");
+                case G_TRAILERS: return Ui.tr("Trailers");
+                case G_WATCH: return Ui.tr("Watch from the screensaver");
+                case G_WEATHER: return Ui.tr("Weather widget");
+                case G_CITY: return Ui.tr("City");
+                case G_TEMP: return Ui.tr("Temperature");
+                case G_FORECAST: return Ui.tr("Forecast");
+                case G_PLAYING: return Ui.tr("Now Playing widget");
+                case G_QUOTES: return Ui.tr("Quotes widget");
+                case G_COIN: return "Bitcoin";
+                case G_COIN + 1: return "Ethereum";
+                case G_COIN + 2: return "Solana";
+                case G_COIN + 3: return Ui.tr("Dollar");
+                case G_PREVIEW: return Ui.tr("Screensaver");
+                case G_PHOTOS: return Ui.tr("My Photos");
+                case G_SLEEP: return Ui.tr("Sleep Timer");
+                case G_KEEP: return Ui.tr("Keep Google TV's home app");
+                case G_LOW: return Ui.tr("Low-memory mode");
+                case G_UPDATES: return Ui.tr("Updates");
+                case G_TV: return Ui.tr("TV Settings");
+                case G_REMOTE: return Ui.tr("Remote Buttons");
+                default:
+                    if (id >= G_REMOTE && id - G_REMOTE < keyLabels().length) return keyLabels()[id - G_REMOTE];
+                    return "";
+            }
+        }
+
+        private String groupDetail(int id) {
+            if (id == G_TRAILERS) return Ui.tr("A silent preview after you rest on a title. Up turns the sound on.");
+            if (id == G_LOW) return Ui.tr("No trailers, and flat glass, on a TV that's low on memory.");
+            if (id == G_KEEP) return Ui.tr("Google's home stays available for Assistant. This only applies on TVs where Remote Buttons runs.");
+            return "";
+        }
+
+        private String groupValue(int id) {
+            switch (id) {
+                case G_HOME:
+                    if (busy()) {
+                        String text = busyText();
+                        return text.isEmpty() ? Ui.tr("Starting…") : text;
+                    }
+                    return freeActive() ? "Free My TV" : Ui.tr("Original");
+                case G_THEME: {
+                    String theme = Prefs.theme();
+                    return theme.equals("light") ? Ui.tr("Light") : theme.equals("dark") ? Ui.tr("Dark") : Ui.tr("Automatic");
+                }
+                case G_LANG: {
+                    String lang = Prefs.language();
+                    return lang.equals("auto") ? Ui.tr("Automatic") : Ui.languageName(lang);
+                }
+                case G_SOUNDS: return onOff(Prefs.sounds());
+                case G_TMDB: return keyValue();
+                case G_CARDS: return String.valueOf(Prefs.cards());
+                case G_FROM: return someServicesOff ? Ui.tr("services|Some") : Ui.tr("services|All");
+                case G_TRAILERS: return trailerWord(Prefs.lowMemory() ? "off" : Prefs.trailers());
+                case G_WATCH: return onOff(Prefs.saverWatch());
+                case G_WEATHER: return onOff(Prefs.weather());
+                case G_CITY: return Prefs.city().isEmpty() ? "—" : Prefs.city();
+                case G_TEMP: {
+                    String unit = Prefs.temperature();
+                    return unit.equals("C") ? "°C" : unit.equals("F") ? "°F" : Ui.tr("unit|Automatic");
+                }
+                case G_FORECAST: return Prefs.forecast().equals("days") ? Ui.tr("Next days") : Ui.tr("Next hours");
+                case G_PLAYING: return onOff(Prefs.nowPlaying());
+                case G_QUOTES: return onOff(Prefs.quotes());
+                case G_PHOTOS: {
+                    int photos = Photos.files(getContext()).size();
+                    return photos == 0 ? Ui.tr("photos|None") : Prefs.photos() ? Ui.plural("plural|one:{n} photo|other:{n} photos", photos) : Ui.tr("Off");
+                }
+                case G_PREVIEW: return Ui.tr("Preview");
+                case G_SLEEP: return sleepLeft > 0 ? Ui.trf("{time} left", "time", SleepTimer.duration(sleepLeft)) : Ui.tr("Off");
+                case G_KEEP: return onOff(Prefs.keepGoogleHome());
+                case G_LOW: return onOff(Prefs.lowMemory());
+                case G_UPDATES: return updatesValue();
+                default:
+                    if (id >= G_COIN && id < G_COIN + 4) return onOff(Prefs.quotes() && Prefs.coin(id - G_COIN));
+                    if (id >= G_REMOTE && id < G_REMOTE + Prefs.KEYS.length) {
+                        if (appPkgs.isEmpty()) loadApps();
+                        String[] values = keyValues();
+                        int at = id - G_REMOTE;
+                        return at < values.length ? values[at] : "";
+                    }
+                    return "";
+            }
+        }
+
+        private static String trailerWord(String v) {
+            return "on".equals(v) ? Ui.tr("On") : "off".equals(v) ? Ui.tr("Off") : Ui.tr("Muted");
         }
 
         /** Home screen picks: status, and the credit TMDB asks for. */
@@ -695,12 +1083,14 @@ public class SettingsActivity extends Activity {
                 case KeyEvent.KEYCODE_DPAD_UP:
                     if (down && focus > 0) focus--;
                     else if (down && scrolling() && pickScroll > 0) pickScroll--;
+                    if (down && screen == MAIN && onRail) { section = focus; pickScroll = 0; }
                     invalidate();
                     spoken.focusMoved();
                     return true;
                 case KeyEvent.KEYCODE_DPAD_DOWN:
                     if (down && focus < rowCount() - 1) focus++;
                     else if (down && scrolling() && pickScroll + rowCount() < listSize()) pickScroll++;
+                    if (down && screen == MAIN && onRail) { section = focus; pickScroll = 0; }
                     invalidate();
                     spoken.focusMoved();
                     return true;
@@ -708,6 +1098,8 @@ public class SettingsActivity extends Activity {
                 case KeyEvent.KEYCODE_DPAD_RIGHT:
                     if (down && screen == SHELF_EDIT) {
                         moveShelfApp(e.getKeyCode() == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1);
+                    } else if (down && screen == MAIN) {
+                        moveGroup(e.getKeyCode() == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1);
                     } else if (down && (screen == HOME_SETTINGS || screen == REMOTE_KEYS || screen == POWER || screen == PICKS || screen == PICK_FROM)) {
                         adjust(e.getKeyCode() == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1);
                     }
@@ -738,27 +1130,16 @@ public class SettingsActivity extends Activity {
                                 pickScroll = 0;   // the picker's scroll isn't this short list's
                                 screen = POWER;
                             } else if (screen == PICKER && (pickFor == PICK_CITY || pickFor == PICK_LANGUAGE)) {
-                                focus = pickFor == PICK_CITY ? CITY_ROW : 0;
-                                pickScroll = 0;   // both rows are on the list's first screen
-                                screen = HOME_SETTINGS;
+                                returnToGroup();
                             } else if (screen == PICKER) {
-                                focus = pickFor - 1;
-                                screen = REMOTE_KEYS;
+                                returnToGroup();
                             } else if (screen == TMDB_KEY) {
                                 closeKeyScreen();
-                            } else if (screen == PICKS) {
-                                focus = PICKS_ROW;
-                                pickScroll = 0;
-                                screen = HOME_SETTINGS;
-                            } else if (screen == PICK_FROM) {
-                                countServicesOff();
-                                pickScroll = 0;   // the Picks screen has two rows
-                                focus = 1;
-                                screen = PICKS;
+                            } else if (screen == PICKS || screen == PICK_FROM) {
+                                if (screen == PICK_FROM) countServicesOff();
+                                returnToGroup();
                             } else {
-                                focus = screen == HOME_SETTINGS ? 2 : screen == SHELF_EDIT ? (editingTop ? 4 : 3)
-                                        : screen == REMOTE_KEYS ? 5 : screen == POWER ? 6 : 0;
-                                screen = MAIN;
+                                returnToGroup();
                             }
                         }
                         backDown = false;
@@ -874,7 +1255,8 @@ public class SettingsActivity extends Activity {
         private String need(int i) {
             switch (screen) {
                 case MAIN:
-                    return i == 5 ? Capabilities.NEED_REMOTE_BUTTONS : i == 6 ? Capabilities.NEED_ADB : null;
+                    if (onRail) return null;
+                    return groupNeed(groupId(i));
                 case HOME_SETTINGS:
                     return pickScroll + i == PLAYING_ROW ? Capabilities.NEED_LISTENER : null;
                 case POWER: {
@@ -900,8 +1282,11 @@ public class SettingsActivity extends Activity {
                 whyScroll = pickScroll;
                 for (int r = 0; r < n; r++) {
                     String need = need(r);
+                    int gid = screen == MAIN && !onRail ? groupId(r) : -1;
                     whyRows[r] = screen == HOME_SETTINGS && pickScroll + r >= COIN_ROWS && pickScroll + r < keyRow() && !Prefs.quotes()
                             ? Ui.tr("Turn on the Quotes widget to pick its coins.")
+                            : gid == G_TRAILERS && Prefs.lowMemory() ? Ui.tr("Low-memory mode is on, so trailers stay off.")
+                            : gid >= G_COIN && gid < G_COIN + 4 && !Prefs.quotes() ? Ui.tr("Turn on the Quotes widget to pick its coins.")
                             : need == null ? null : Capabilities.missing(getContext(), need);
                 }
             }
@@ -1243,10 +1628,7 @@ public class SettingsActivity extends Activity {
 
         private void closeKeyScreen() {
             stopKeyPage();
-            screen = HOME_SETTINGS;
-            int row = keyRow(), rows = settingLabels().length;
-            pickScroll = Math.max(0, Math.min(row - 3, rows - Math.min(SETTINGS_VISIBLE, rows)));
-            focus = row - pickScroll;
+            returnToGroup();
         }
 
         /** A new page and its code (a new port and token); the old one stops. */
@@ -1502,7 +1884,7 @@ public class SettingsActivity extends Activity {
                 String message = error;
                 handler.post(() -> {
                     cityStatus = message;
-                    if (!result.isEmpty() && screen == HOME_SETTINGS) {
+                    if (!result.isEmpty() && (screen == HOME_SETTINGS || screen == MAIN)) {
                         cities.clear();
                         cities.addAll(result);
                         openPicker(PICK_CITY);
@@ -1515,10 +1897,12 @@ public class SettingsActivity extends Activity {
         }
 
         private boolean scrolling() {
-            return screen == PICKER || screen == SHELF_EDIT || screen == HOME_SETTINGS || screen == PICK_FROM;
+            return screen == PICKER || screen == SHELF_EDIT || screen == HOME_SETTINGS || screen == PICK_FROM
+                    || (screen == MAIN && !onRail);
         }
 
         private int listSize() {
+            if (screen == MAIN) return groupIds().length;
             return screen == SHELF_EDIT ? shelfRows.size() : screen == HOME_SETTINGS ? settingLabels().length : screen == PICK_FROM ? services.size() : pickLabels.size();
         }
 
@@ -1780,29 +2164,23 @@ public class SettingsActivity extends Activity {
                     HomeMode.request(c, wantFree ? HomeMode.FREE : HomeMode.ORIGINAL);
                     pendingAt = SystemClock.uptimeMillis();
                 }
-                screen = MAIN;
-                focus = 0;
+                returnToGroup();
             } else if (screen == PICKER && pickFor == PICK_CITY) {
                 String[] city = cities.get(pickScroll + focus);
                 Prefs.setCity(city[1], city[2], city[3]);
                 HomeData.get(c).settingsChanged();
-                focus = CITY_ROW;
-                pickScroll = 0;
-                screen = HOME_SETTINGS;
+                returnToGroup();
             } else if (screen == PICKER && pickFor <= PICK_SLEEP) {
                 pickPower();
             } else if (screen == PICKER && pickFor == PICK_LANGUAGE) {
                 Prefs.setLanguage(languageChoices()[pickScroll + focus]);
                 SleepOverlay.update(c);   // the pill speaks it too
-                focus = 0;
-                pickScroll = 0;
-                screen = HOME_SETTINGS;
+                returnToGroup();
             } else if (screen == PICKER) {
                 int at = pickScroll + focus;
                 Prefs.setKeyApp(Prefs.KEYS[pickFor - 1], appPkgs.get(at));
                 HomeMode.ensureRemoteService(c, 3_000);
-                focus = pickFor - 1;
-                screen = REMOTE_KEYS;
+                returnToGroup();
             } else if (screen == SHELF_EDIT) {
                 toggleShelfApp();
                 invalidate();
@@ -1852,32 +2230,14 @@ public class SettingsActivity extends Activity {
                 adjust(1);
                 invalidate();
                 return;
-            } else if (focus == 0) {
-                if (busy()) return;
-                screen = HOME_CHOICE;
-                focus = freeActive() ? 0 : 1;
-            } else if (focus == 1) {
-                pause();
-                activity.showPreview();
-            } else if (focus == 2) {
-                screen = HOME_SETTINGS;
-                focus = 0;
-                pickScroll = 0;
-            } else if (focus == 3) {
-                openShelfEditor(false);
-            } else if (focus == 4) {
-                openShelfEditor(true);
-            } else if (focus == 5) {
-                HomeMode.ensureRemoteService(c, 0);   // the buttons work from inside other apps through this service
-                loadApps();
-                screen = REMOTE_KEYS;
-                focus = 0;
-            } else if (focus == 6) {
-                pickScroll = 0;
-                screen = POWER;
-                focus = 0;
-            } else {
-                activity.startActivity(new Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            } else if (screen == MAIN) {
+                if (onRail) {
+                    onRail = false;
+                    focus = 0;
+                    pickScroll = 0;
+                } else {
+                    activateGroup();
+                }
             }
             for (Spring s : pop) s.snap(0);
             invalidate();

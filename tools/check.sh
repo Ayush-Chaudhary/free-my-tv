@@ -15,6 +15,8 @@ case "$what" in
   *) echo "Usage: tools/check.sh [all|android|web]" >&2; exit 2 ;;
 esac
 
+python3 tools/tokens.py --check
+
 if [ "$what" = all ] || [ "$what" = android ]; then
   ./build.sh
 fi

@@ -232,9 +232,18 @@ final class Scene {
      * Liquid Glass in rectangle `r` (screen coordinates). band and refraction in px (the thick rim and how much it
      * bends the image), specular = rim highlight, alpha = opacity of the whole glass.
      */
+    private boolean flat;
+
+    /** Low-memory mode: a flat tint instead of the shader glass. */
+    void setFlat(boolean on) { flat = on; }
+
     void liquid(Canvas c, RectF r, float radius, int tint, float tintAlpha, float lift, float band, float refraction,
                 float specular, float alpha) {
         if (alpha <= 0.004f) return;
+        if (flat) {
+            glass(c, r, radius, tint, Math.max(0.55f, tintAlpha), 0, 0, 0, 1, alpha);
+            return;
+        }
         if (liquid == null) {
             if (imageGlass && softShaderA != null) {
                 // Mapped by what the copy covers: 270 / 8 = 33.75 rows, of which the bitmap holds 33.

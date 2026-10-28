@@ -26,7 +26,7 @@ Open source. Built with Claude Code. One button to undo.
 - **A screensaver to match.** Full-screen photos of the picks with a big glass clock. Optionally (*Watch from the screensaver*, in Home Settings), OK opens the title on screen in its app, and any other button just closes it.
 - **Your own photos** (Google TV and Android TV). Send them from your computer (up to 100): the screensaver shows them, and without picks one is the home screen's background each hour.
 - **Fast.** 60 fps, every frame in 16.6 ms, on the TV's own chip. The home screen uses 96 MB of memory instead of 242 MB (−60%).<br><sub>Measured on a 98″ TCL Google TV running Android 14.</sub>
-- **Set up on the TV.** Language, your city, temperature, theme, how many picks and which streaming services they come from, the weather and prices cards, the forecast's hours or days, which coins, and the apps on the shelf, in Free My TV's own settings.
+- **Set up on the TV.** Language, your city, temperature, theme (dark or light), how many picks and which streaming services they come from, silent trailers, a low-memory mode, the weather and prices cards, the forecast's hours or days, which coins, and the apps on the shelf, in Free My TV's own settings.
 - **Safe.** No root. Nothing is uninstalled. One button brings back the factory home screen.
 
 ## Install
@@ -151,7 +151,7 @@ The first values come from `config.properties`, created by the first build (Goog
 | `show_crypto` | Show Binance crypto prices on home and screensaver | `true` |
 | `currency` | Crypto prices in `USD`, `EUR`, `BRL`… | `USD` |
 | `temperature` | `C`, `F` or `auto` | `auto` |
-| `theme` | `auto` (dark from sunset to sunrise), `light` or `dark` | `auto` |
+| `theme` | `dark` or `light`. A TV that already saved `auto` still follows sunset until the theme is changed | `dark` |
 | `disable_assistant` | Also turn off Google Assistant | `false` |
 | `screensaver` | `false` keeps the TV's own screensaver: Free My TV then changes only the home screen and the promo apps (Google TV) | `true` |
 | `keep_google_home` | `true` leaves Google TV's home app installed so Assistant can open a title page. Only where the remote-button service runs (TCL, Sony, Hisense, Xiaomi, Vestel, KTC, Formovie; not TCL on Android 11). Elsewhere the switch ignores it and turns Google's home off, so the Home button is never stuck. A tap of the mic button opens Free My TV's search and listens; with this on, holding the mic button still opens Google Assistant | `false` |
