@@ -712,6 +712,16 @@ final class HomeMode {
                     order.remove(dreamPkg);
                     if (disabledNow.remove(dreamPkg)) adb.shell("pm enable " + dreamPkg);
                 }
+                // Keep Google's home on when the setting says so, including one an earlier switch had turned off.
+                String googlePkg = packageOf(GOOGLE_HOME);
+                if (RemoteKeys.keepGoogleHome() && googlePkg != null) {
+                    wanted.remove(googlePkg);
+                    order.remove(googlePkg);
+                    if (disabled.remove(googlePkg) && disabledNow.contains(googlePkg)
+                            && !adb.shell("pm enable " + googlePkg).contains("new state: enabled")) {
+                        disabled.add(googlePkg);
+                    }
+                }
                 // Off before Free My TV: turned off again if a TV update brings one back, but never handed to
                 // Original to turn on.
                 List<String> keptOff = stringList(s, "keptOff");

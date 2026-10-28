@@ -43,8 +43,22 @@ public class HomeActivity extends Activity {
             return;
         }
         Ui.init(this);
+        if (getIntent().getBooleanExtra("demo", false)) {
+            String theme = getIntent().getStringExtra("theme");
+            if ("light".equals(theme) || "dark".equals(theme)) Prefs.setTheme(theme);
+        }
         home = new HomeView(this);
         setContentView(home);
+        if (getIntent().getBooleanExtra("demo", false)) {
+            String search = getIntent().getStringExtra("search");
+            if (search != null && !search.isEmpty()) {
+                startActivity(new Intent(this, SearchActivity.class)
+                        .putExtra("demo", true)
+                        .putExtra("theme", getIntent().getStringExtra("theme"))
+                        .putExtra("shot", search));
+            } else home.applyDemo(getIntent().getStringExtra("shot"));
+        }
+        prefsVersion = Prefs.version;
         getWindow().setBackgroundDrawable(null);
         if (getIntent().getBooleanExtra(EXTRA_ALL_APPS, false)) home.showAllApps();
         openSearch(getIntent());
@@ -82,7 +96,21 @@ public class HomeActivity extends Activity {
     /** Home button pressed on the home screen: back to the entry state (focus on the first app, sheet closed). */
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        setIntent(intent);
         if (home == null) return;
+        if (intent.getBooleanExtra("demo", false)) {
+            String theme = intent.getStringExtra("theme");
+            if ("light".equals(theme) || "dark".equals(theme)) Prefs.setTheme(theme);
+            prefsVersion = Prefs.version;
+            String search = intent.getStringExtra("search");
+            if (search != null && !search.isEmpty()) {
+                startActivity(new Intent(this, SearchActivity.class)
+                        .putExtra("demo", true)
+                        .putExtra("theme", theme)
+                        .putExtra("shot", search));
+            } else home.applyDemo(intent.getStringExtra("shot"));
+            return;
+        }
         if (intent.getBooleanExtra(EXTRA_ALL_APPS, false)) home.showAllApps();
         else if (!intent.getBooleanExtra(EXTRA_SEARCH, false)) home.reset(true);
         openSearch(intent);

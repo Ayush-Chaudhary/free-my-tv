@@ -15,7 +15,13 @@ case "$what" in
   *) echo "Usage: tools/check.sh [all|android|web]" >&2; exit 2 ;;
 esac
 
+python3 tools/tokens.py --check
+
 if [ "$what" = all ] || [ "$what" = android ]; then
+  row_tmp="$(mktemp -d)"
+  javac -encoding UTF-8 -d "$row_tmp" app/src/io/freemytv/RowFill.java tools/RowFillTest.java
+  java -cp "$row_tmp" io.freemytv.RowFillTest
+  rm -rf "$row_tmp"
   ./build.sh
 fi
 

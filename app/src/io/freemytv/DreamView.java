@@ -178,6 +178,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
 
     void start() {
         if (running) return;
+        Prefs.reload();   // :home and the main process both read the pictures choice saved with commit()
         running = true;
         if (worker.isShutdown()) worker = Executors.newSingleThreadExecutor();
         startedAt = clock();
@@ -189,6 +190,7 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
         data.refreshIfStale();
         recs.refreshIfStale();
         recs.prefetchAll();
+        if (!Photos.on(getContext())) Scenery.refresh(getContext(), () -> { if (running) prepareNext(); });
         Photos.importInbox(getContext(), () -> { if (running) prepareNext(); });
         prepareNext();
         handler.postDelayed(tick, 60_000);
@@ -280,9 +282,17 @@ final class DreamView extends View implements Choreographer.FrameCallback, HomeD
 
     // MARK: - Photos
 
-    /** Your photos when they are on, otherwise the picks'. */
+    /**
+     * Your own photos when they are on. Otherwise movie and show art when that is chosen and there is some,
+     * and nature scenery when that is chosen, or when there is no TMDB key and no title art.
+     */
     private List<Recs.Pick> photos() {
-        return Photos.on(getContext()) ? Photos.picks(getContext()) : recs.showcase();
+        if (Photos.on(getContext())) return Photos.picks(getContext());
+        if (Prefs.saverTitles() && Recs.hasKey(getContext())) {
+            List<Recs.Pick> art = recs.showcase();
+            if (!art.isEmpty()) return art;
+        }
+        return Scenery.picks(getContext());
     }
 
     /** Loads the next photo in the background (one at a time); once ready, it comes in at the right moment. */

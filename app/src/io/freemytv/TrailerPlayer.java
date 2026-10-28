@@ -31,7 +31,6 @@ import java.util.regex.Pattern;
 final class TrailerPlayer {
     private static final long TRAILER_DELAY = 1500;
     private static final long POP_MS = 520, POP_AFTER = 900, PLAYER_IDLE = 30_000;
-    private static final float POP_W = 1200, POP_TOP = 96, POP_DIM = 0.6f, POP_BLUR = 28;
     private static final Pattern YOUTUBE_ID = Pattern.compile("[A-Za-z0-9_-]{6,20}");
     private static final PathInterpolator EASE = new PathInterpolator(0.32f, 0.72f, 0f, 1f);
     private static final String CSS_EASE = "cubic-bezier(.32,.72,0,1)";
@@ -39,17 +38,20 @@ final class TrailerPlayer {
     private final HomeView home;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final RectF window = new RectF();
+    private final RectF bezel = new RectF();
     private final RectF cardAt = new RectF();
     private FrameLayout box;
     private WebView web;
     private View scrim, info;
     private String forKey, loadedId, pendingCall;
     private Recs.Pick popPick;
-    private boolean pageReady, popped, asleep, releasePending, gaveUp, memoryNoted, dead;
+    private boolean pageReady, popped, asleep, releasePending, gaveUp, memoryNoted, dead, soundOn, demoMode;
+    private float progress;
     private final TextPaint fit = new TextPaint();
     private float backdrop;
     private int blurStep = -1;
     private android.animation.ValueAnimator backdropAnim;
+    private final Paint plate = new Paint(Paint.ANTI_ALIAS_FLAG);
     private Paint popTitle, popMeta;
     private TextPaint popAbout;
     private StaticLayout popAboutLayout;
@@ -64,7 +66,31 @@ final class TrailerPlayer {
         if (want != null && want.equals(forKey)) return;
         stop(home.homeRunning());
         forKey = want;
-        if (pick != null && !gaveUp) handler.postDelayed(start, TRAILER_DELAY);
+        if (pick == null || gaveUp || demoMode) return;
+        if ("off".equals(Prefs.trailersEffective())) return;
+        soundOn = "on".equals(Prefs.trailers());
+        handler.postDelayed(start, TRAILER_DELAY);
+    }
+
+    /** Up toggles sound. Left and right move to the next title. True when the key was for the popped trailer. */
+    boolean onMove(int dx, int dy) {
+        if (!popped) return false;
+        if (dy < 0 && dx == 0) {
+            soundOn = !soundOn;
+            pushSound();
+            if (info != null) info.invalidate();
+            return true;
+        }
+        if (dx != 0 && dy == 0) {
+            home.trailerStep(dx);
+            return true;
+        }
+        return false;
+    }
+
+    /** A trailer is in the card, not yet popped. */
+    boolean resting() {
+        return !popped && (demoMode || loadedId != null);
     }
 
     /** Back while the trailer is popped out: close it and leave the card's photo. True if that consumed Back. */
@@ -130,7 +156,7 @@ final class TrailerPlayer {
         wake();
         loadedId = id;
         placeOnCard();
-        String call = String.format(Locale.US, "play('%s',%.2f,%.1f)", id, cardInset(), cardRadius());
+        String call = String.format(Locale.US, "play('%s',%s)", id, soundOn ? "true" : "false");
         if (pageReady) web.evaluateJavascript(call, null);
         else pendingCall = call;
     }
@@ -150,7 +176,6 @@ final class TrailerPlayer {
         if (box != null) {
             box.animate().cancel();
             if (animate && box.getAlpha() > 0) {
-                if (web != null) web.evaluateJavascript(String.format(Locale.US, "shape(%.2f,%.1f,%d)", cardInset(), cardRadius(), 300), null);
                 box.animate().scaleX(cardScale()).scaleY(cardScale())
                         .translationX(cardAt.centerX() - window.centerX()).translationY(cardAt.centerY() - window.centerY())
                         .alpha(0).setDuration(300).setInterpolator(EASE)
@@ -261,6 +286,7 @@ final class TrailerPlayer {
     }
 
     private boolean memoryAllows() {
+        if ("off".equals(Prefs.trailersEffective())) return false;
         ActivityManager am = home.getContext().getSystemService(ActivityManager.class);
         if (am == null) return false;
         if (am.isLowRamDevice()) {
@@ -283,15 +309,21 @@ final class TrailerPlayer {
     private void placeOnCard() {
         RectF base = home.focusedCardRect();
         float k = home.uiScale();
-        float s = 1.05f, cx = base.centerX(), cy = base.centerY() - 6 * k;
+        float inset = Tokens.LAYOUT_VIDEOINSET * k;
+        float s = Tokens.FOCUS_CARD, cx = base.centerX(), cy = base.centerY() - Tokens.FOCUS_LIFT * k;
         cardAt.set(cx - base.width() * s / 2, cy - base.height() * s / 2, cx + base.width() * s / 2, cy + base.height() * s / 2);
-        float pw = POP_W * k, ph = pw * 9 / 16;
+        cardAt.inset(inset, inset);
+        float vw = Tokens.LAYOUT_POPW * k, vh = Tokens.LAYOUT_POPH * k, pad = Tokens.LAYOUT_BEZELPAD * k;
+        float extra = Tokens.LAYOUT_BEZELEXTRA * k;
+        float outerW = vw + pad * 2, outerH = vh + pad * 2 + extra;
         int w = home.screenPx();
-        window.set((w - pw) / 2, POP_TOP * k, (w + pw) / 2, POP_TOP * k + ph);
+        float left = (w - outerW) / 2, top = Tokens.LAYOUT_POPTOP * k;
+        bezel.set(left, top, left + outerW, top + outerH);
+        window.set(left + pad, top + pad, left + pad + vw, top + pad + vh);
         layout();
         if (box == null) return;
-        box.setPivotX(pw / 2);
-        box.setPivotY(ph / 2);
+        box.setPivotX(window.width() / 2);
+        box.setPivotY(window.height() / 2);
         box.setScaleX(cardScale());
         box.setScaleY(cardScale());
         box.setTranslationX(cardAt.centerX() - window.centerX());
@@ -317,7 +349,6 @@ final class TrailerPlayer {
         popPick = focused();
         popAboutLayout = null;
         info.invalidate();
-        web.evaluateJavascript("shape(0,0," + POP_MS + ")", null);
         box.animate().scaleX(1).scaleY(1).translationX(0).translationY(0).alpha(1)
                 .setDuration(POP_MS).setInterpolator(EASE).start();
         fade(1, POP_MS);
@@ -343,20 +374,14 @@ final class TrailerPlayer {
 
     private void applyBackdrop(float level) {
         backdrop = level;
-        if (scrim != null) scrim.setAlpha(POP_DIM * level);
+        float dim = Build.VERSION.SDK_INT >= 31 ? Tokens.SCRIM_POP : Tokens.SCRIM_POP_NO_BLUR;
+        if (scrim != null) scrim.setAlpha(dim * level);
         if (info != null) info.setAlpha(level);
         if (Build.VERSION.SDK_INT < 31) return;
-        int step = Math.round(POP_BLUR * home.uiScale() * level / 2);
+        int step = Math.round(Tokens.LAYOUT_POPBLUR * home.uiScale() * level);
         if (step == blurStep) return;
         blurStep = step;
-        // RenderEffect is Android 12. Loaded by name so this class still starts on Android 8.
-        try {
-            Class<?> fx = Class.forName("android.graphics.RenderEffect");
-            Object effect = step == 0 ? null : fx.getMethod("createBlurEffect", float.class, float.class,
-                    android.graphics.Shader.TileMode.class).invoke(null, step * 2f, step * 2f, android.graphics.Shader.TileMode.CLAMP);
-            android.view.View.class.getMethod("setRenderEffect", fx).invoke(home, effect);
-        } catch (Throwable ignored) {
-        }
+        home.setBackdropBlur(step);
     }
 
     private void drawInfo(Canvas c) {
@@ -364,11 +389,22 @@ final class TrailerPlayer {
         if (p == null) return;
         float k = home.uiScale();
         if (popTitle == null) {
-            popTitle = Ui.text(Ui.semibold, 34 * k, 0xFFFFFFFF);
-            popMeta = Ui.text(Ui.medium, 25 * k, 0xFFB4B4BA);
-            popAbout = new TextPaint(Ui.text(Ui.regular, 24 * k, 0xFFD6D6DC));
+            popTitle = Ui.text(Ui.semibold, Tokens.TYPE_HEADLINE * k, 0xFFFFFFFF);
+            popMeta = Ui.text(Ui.medium, Tokens.TYPE_CAPTION * k, 0xFFB4B4BA);
+            popAbout = new TextPaint(Ui.text(Ui.medium, Tokens.TYPE_CAPTION * k, 0xFFD6D6DC));
         }
-        float left = window.left, width = window.width(), y = window.bottom + 54 * k;
+        plate.setColor(0xF01C1C1E);
+        float radius = Tokens.LAYOUT_BEZELRADIUS * k;
+        c.drawRoundRect(bezel, radius, radius, plate);
+        float barW = window.width() * Math.max(0.04f, Math.min(1, progress));
+        plate.setColor(0xFFFFFFFF);
+        float barTop = window.bottom + 8 * k;
+        c.drawRoundRect(window.left, barTop, window.left + barW, barTop + 4 * k, 2 * k, 2 * k, plate);
+        String sound = soundOn ? Ui.tr("Sound on") : Ui.tr("Muted");
+        popMeta.setTextAlign(Paint.Align.RIGHT);
+        c.drawText(sound, bezel.right, bezel.top - 12 * k, popMeta);
+        popMeta.setTextAlign(Paint.Align.LEFT);
+        float left = bezel.left, width = bezel.width(), y = bezel.bottom + 48 * k;
         fit.set(popTitle);
         c.drawText(TextUtils.ellipsize(p.title == null ? "" : p.title, fit, width, TextUtils.TruncateAt.END).toString(), left, y, popTitle);
         if (p.meta != null && !p.meta.isEmpty()) {
@@ -385,6 +421,73 @@ final class TrailerPlayer {
             c.translate(left, y + 20 * k);
             popAboutLayout.draw(c);
             c.restore();
+        }
+    }
+
+    private void pushSound() {
+        if (web != null) web.evaluateJavascript("setMuted(" + (soundOn ? "false" : "true") + ")", null);
+    }
+
+    /** A stand-in frame for screenshots. No WebView and no network. */
+    void demo(Recs.Pick pick, boolean poppedOut) {
+        demoMode = true;
+        gaveUp = true;
+        popPick = pick;
+        popped = poppedOut;
+        soundOn = false;
+        progress = 0.42f;
+        forKey = pick == null ? null : Recs.key(pick);
+        if (box == null) {
+            box = new FrameLayout(home.getContext());
+            box.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+            View stand = new View(home.getContext()) {
+                @Override protected void onDraw(Canvas c) {
+                    plate.setColor(0xFF14344A);
+                    c.drawRect(0, 0, getWidth(), getHeight(), plate);
+                    plate.setColor(0xFF2A6FA8);
+                    c.drawCircle(getWidth() / 2f, getHeight() / 2f, Math.min(getWidth(), getHeight()) * 0.18f, plate);
+                }
+            };
+            box.addView(stand, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+            scrim = new View(home.getContext());
+            scrim.setBackgroundColor(0xFF000000);
+            scrim.setAlpha(0);
+            info = new View(home.getContext()) {
+                @Override protected void onDraw(Canvas c) { drawInfo(c); }
+            };
+            info.setAlpha(0);
+            int at = home.layerAboveTiles();
+            home.addView(scrim, at);
+            home.addView(info, home.indexOfChild(scrim) + 1);
+            home.addView(box, home.indexOfChild(info) + 1);
+        }
+        placeOnCard();
+        box.setAlpha(1);
+        if (poppedOut) {
+            box.setScaleX(1);
+            box.setScaleY(1);
+            box.setTranslationX(0);
+            box.setTranslationY(0);
+            fade(1, 0);
+        } else {
+            box.setScaleX(cardScale());
+            box.setScaleY(cardScale());
+            box.setTranslationX(cardAt.centerX() - window.centerX());
+            box.setTranslationY(cardAt.centerY() - window.centerY());
+        }
+    }
+
+    /** The card's rectangle exists only after layout. Demo frames are placed again then. */
+    void followLayout() {
+        if (!demoMode || box == null || home.screenPx() <= 0) return;
+        placeOnCard();
+        if (popped) {
+            box.setScaleX(1);
+            box.setScaleY(1);
+            box.setTranslationX(0);
+            box.setTranslationY(0);
+            if (scrim != null) scrim.setAlpha(1);
+            if (info != null) info.setAlpha(1);
         }
     }
 
@@ -445,6 +548,22 @@ final class TrailerPlayer {
             });
         }
 
+        // Strings, not floats: d8 from build-tools 34 crashes on a JavascriptInterface float.
+        @JavascriptInterface public void progress(String at, String duration) {
+            float pos, length;
+            try {
+                pos = Float.parseFloat(at);
+                length = Float.parseFloat(duration);
+            } catch (RuntimeException ignored) {
+                return;
+            }
+            if (length <= 0) return;
+            handler.post(() -> {
+                progress = pos / length;
+                if (info != null) info.invalidate();
+            });
+        }
+
         @JavascriptInterface public void failed() {
             handler.post(() -> {
                 if (loadedId == null) return;
@@ -469,16 +588,15 @@ final class TrailerPlayer {
             + "function fit(){var W=innerWidth,H=innerHeight,vw=Math.max(W,H*16/9),vh=vw*9/16,f=document.getElementById('p');"
             + "if(!f)return;f.style.width=vw+'px';f.style.height=vh+'px';f.style.left=((W-vw)/2)+'px';f.style.top=((H-vh)/2)+'px';}"
             + "function onYouTubeIframeAPIReady(){ready=true;if(pending){var a=pending;pending=null;play.apply(null,a);}}"
-            + "function shape(i,r,ms){var c=document.getElementById('c');c.style.transition=ms?'clip-path '+ms+'ms " + CSS_EASE + "':'none';"
-            + "c.ontransitionend=null;c.style.clipPath='inset('+i+'% 0 round '+r+'px)';"
-            + "if(i==0&&ms)c.ontransitionend=function(){c.ontransitionend=null;c.style.clipPath='none';};}"
-            + "function play(k,i,r){shape(i,r,0);if(!ready){pending=[k,i,r];return;}fit();"
-            + "function sound(p){p.unMute();p.setVolume(100);}"
+            + "var muted=true;function sound(p){if(!p)return;if(muted){p.mute();p.setVolume(0);}else{p.unMute();p.setVolume(100);}}"
+            + "function setMuted(m){muted=!!m;if(player)sound(player);}"
+            + "function play(k,withSound){muted=!withSound;if(!ready){pending=[k,withSound];return;}fit();"
             + "if(!player){player=new YT.Player('p',{videoId:k,playerVars:{autoplay:1,controls:0,disablekb:1,fs:0,rel:0,playsinline:1,iv_load_policy:3,cc_load_policy:0},events:{"
             + "onReady:function(e){fit();sound(e.target);e.target.playVideo();},"
             + "onStateChange:function(e){var id=(player&&player.getVideoData)?player.getVideoData().video_id:'';"
             + "if(e.data==1){sound(player);FreeMyTV.playing(id);}if(e.data==0)FreeMyTV.ended(id);},"
             + "onError:function(){FreeMyTV.failed();}}});}else{player.loadVideoById(k);sound(player);}}"
+            + "setInterval(function(){if(player&&player.getDuration){var d=player.getDuration();if(d>0)FreeMyTV.progress(''+player.getCurrentTime(),''+d);}},500);"
             + "function stop(){pending=null;if(player&&player.stopVideo)player.stopVideo();}</script></body></html>";
 
 }

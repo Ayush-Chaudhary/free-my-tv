@@ -136,9 +136,9 @@ final class Prefs {
 
     static void setTemperature(String v) { put("temperature", v); }
 
-    /** Picks per tab on the home screen: 3 (as it always was) up to Recs.MAX_CARDS. */
+    /** Picks per tab on the home screen: 3 up to Recs.MAX_CARDS. Unset is 10, so each row can fill. */
     static int cards() {
-        return Math.max(3, Math.min(Recs.MAX_CARDS, sp().getInt("cards", 3)));
+        return Math.max(3, Math.min(Recs.MAX_CARDS, sp().getInt("cards", 10)));
     }
 
     static void setCards(int n) { put("cards", n); }
@@ -184,6 +184,56 @@ final class Prefs {
 
     static void setTheme(String v) { put("theme", v); }
 
+    /** Trailers on the home screen: "on" (with sound), "muted" (silent until Up) or "off". */
+    static String trailers() {
+        String v = sp().getString("trailers", "muted");
+        return v.equals("on") || v.equals("off") ? v : "muted";
+    }
+
+    static void setTrailers(String v) { put("trailers", v); }
+
+    /** What actually plays. Low-memory mode forces trailers off; the saved choice stays for when it is turned off. */
+    static String trailersEffective() {
+        return lowMemory() ? "off" : trailers();
+    }
+
+    /** Flat glass, no trailer player, snapped motion: for a TV that is short on memory. */
+    static boolean lowMemory() { return sp().getBoolean("lowMemory", false); }
+
+    static void setLowMemory(boolean on) { put("lowMemory", on); }
+
+    static void setKeepGoogleHome(boolean on) {   // committed: the main process reads it in the next verify
+        sp().edit().putBoolean("keepGoogleHome", on).commit();
+        version++;
+    }
+
+    private static final int RECENT_SEARCHES = 3;
+
+    /** The last few searches, newest first, for the idle search screen. */
+    static java.util.List<String> recentSearches() {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        String saved = sp().getString("recentSearches", "");
+        for (String part : saved.split("\n")) {
+            part = part.trim();
+            if (!part.isEmpty() && out.size() < RECENT_SEARCHES) out.add(part);
+        }
+        return out;
+    }
+
+    static void rememberSearch(String query) {
+        String q = query == null ? "" : query.trim();
+        if (q.isEmpty()) return;
+        java.util.List<String> list = new java.util.ArrayList<>();
+        list.add(q);
+        for (String older : recentSearches()) if (!older.equalsIgnoreCase(q)) list.add(older);
+        StringBuilder saved = new StringBuilder();
+        for (int i = 0; i < list.size() && i < RECENT_SEARCHES; i++) {
+            if (i > 0) saved.append('\n');
+            saved.append(list.get(i).replace('\n', ' '));
+        }
+        put("recentSearches", saved.toString());
+    }
+
     // MARK: - City
 
     static String city() { return sp().getString("city", Place.city()).trim(); }
@@ -202,6 +252,21 @@ final class Prefs {
     /** OK on the screensaver opens the title it shows, in its app; any other key only closes it. Off: any key closes it. */
     static boolean saverWatch() { return sp().getBoolean("saverWatch", false); }
     static void setSaverWatch(boolean on) { put("saverWatch", on); }
+
+    /** Screensaver pictures: "scenery" (nature, the default) or "titles" (movie and show art). */
+    static final String SAVER_SCENERY = "scenery", SAVER_TITLES = "titles";
+
+    static String saverArt() {
+        return SAVER_TITLES.equals(sp().getString("saverArt", SAVER_SCENERY)) ? SAVER_TITLES : SAVER_SCENERY;
+    }
+
+    /** Committed: the screensaver in the main process (ScreensaverAlone) reads this after Prefs.reload(). */
+    static void setSaverArt(String v) {
+        sp().edit().putString("saverArt", SAVER_TITLES.equals(v) ? SAVER_TITLES : SAVER_SCENERY).commit();
+        version++;
+    }
+
+    static boolean saverTitles() { return SAVER_TITLES.equals(saverArt()); }
 
     // MARK: - Widgets and coins
 

@@ -1,43 +1,20 @@
 package io.freemytv;
 
+import android.Manifest;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
-import android.graphics.Canvas;
-import android.graphics.Outline;
-import android.graphics.PorterDuff;
-import android.graphics.drawable.Drawable;
-import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
-import android.text.Editable;
-import android.text.InputType;
-import android.text.TextUtils;
-import android.text.TextWatcher;
-import android.util.LruCache;
-import android.util.TypedValue;
-import android.view.Gravity;
+import android.speech.SpeechRecognizer;
+import android.speech.tts.TextToSpeech;
 import android.view.KeyEvent;
-import android.view.View;
-import android.view.ViewGroup;
-import android.view.ViewOutlineProvider;
-import android.view.inputmethod.EditorInfo;
-import android.widget.EditText;
-import android.widget.FrameLayout;
-import android.widget.HorizontalScrollView;
-import android.widget.ImageView;
-import android.widget.LinearLayout;
-import android.widget.TextView;
 
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -46,280 +23,149 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Search, as on Google TV: voice (the remote's mic, or the button here) or typing. Apps on the TV match at once.
- * Movies and shows come from one TMDB search, then each title's app is filled in alongside the others; a title's own
- * page is looked up only when it is opened. Anything else can go on to Google Assistant.
+ * Search: an on-screen keyboard, the apps on the TV, and one TMDB search. Voice uses the speech recognizer when the
+ * mic is allowed, and the system's voice screen otherwise. "open Netflix" opens that app.
  */
-public class SearchActivity extends Activity {
+public class SearchActivity extends Activity implements SearchCanvas.Host {
     static final String EXTRA_VOICE = "voice";
 
     /** Opens this screen and starts listening. Safe from the key process (its own task). */
     static void startVoice(android.content.Context c) {
         c.startActivity(new Intent(c, SearchActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra(EXTRA_VOICE, true));
     }
+
     static final String EXTRA_QUERY = "query";
     static final String EXTRA_NOTE = "note";
-    private static final int VOICE = 1;
+    private static final int VOICE = 1, MIC = 2;
     private static final String KATNISS = "com.google.android.katniss";
     private static final long TYPING_PAUSE = 700;
-    private static final int BG = 0xFF0B0B0D, FIELD = 0xFF1C1C1E, DIM = 0xFF98989D, INK = 0xFFF5F5F7, DARK = 0xFF1C1C1E;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newFixedThreadPool(4);
-    private final LruCache<String, Bitmap> images = new LruCache<String, Bitmap>(12 * 1024 * 1024) {
-        @Override protected int sizeOf(String key, Bitmap value) { return value.getByteCount(); }
-    };
-    private float k;
-    private EditText field;
-    private TextView status, assist, appsTitle, titlesTitle;
-    private LinearLayout appsRow, titlesRow;
+    private SearchCanvas canvas;
+    private SpeechRecognizer recognizer;
+    private TextToSpeech tts;
     private List<String[]> apps = new ArrayList<>();
-    private boolean appsReady;
+    private boolean appsReady, demo;
     private int generation;
-    private boolean focusResults;
     private String note = "";
+    private String pending = "";
     private long listenedAt;
-    private final Runnable typed = () -> run(field.getText().toString(), false);
 
     @Override protected void onCreate(Bundle saved) {
         super.onCreate(saved);
         Ui.init(this);
-        k = getResources().getDisplayMetrics().widthPixels / 1920f;
-        setContentView(build());
+        if (getIntent().getBooleanExtra("demo", false)) {
+            String theme = getIntent().getStringExtra("theme");
+            if ("light".equals(theme) || "dark".equals(theme)) Prefs.setTheme(theme);
+            demo = true;
+        }
+        canvas = new SearchCanvas(this, this);
+        boolean night = HomeData.isNight(Prefs.theme(), System.currentTimeMillis(), 0, 0);
+        canvas.setNight(night);
+        setContentView(canvas);
+        if (demo) {
+            canvas.demo(getIntent().getStringExtra("shot"), night);
+            return;
+        }
         io.execute(() -> {
             List<String[]> list = HomeApps.launchable(this);
             handler.post(() -> {
                 apps = list;
                 appsReady = true;
-                if (field.getText().length() > 0) run(field.getText().toString(), focusResults);
+                if (!pending.isEmpty()) run(pending, true);
+                else showIdle();
             });
         });
         if (!searchFor(getIntent()) && getIntent().getBooleanExtra(EXTRA_VOICE, false)) listen();
-        else if (getIntent().getStringExtra(EXTRA_QUERY) == null) field.requestFocus();
     }
 
     private boolean searchFor(Intent intent) {
-        String query = intent.getStringExtra(EXTRA_QUERY);
+        String query = intent == null ? null : intent.getStringExtra(EXTRA_QUERY);
         if (query == null || query.trim().isEmpty()) return false;
         note = intent.getBooleanExtra(EXTRA_NOTE, false)
                 ? Ui.trf("Google TV couldn't load “{query}”. Here it is on your apps.", "query", query.trim()) : "";
-        handler.removeCallbacks(typed);
-        field.setText(query);
-        field.setSelection(field.getText().length());
-        focusResults = true;
-        if (appsReady) run(query, true);
+        pending = query.trim();
+        canvas.setQuery(pending);
+        if (appsReady) run(pending, true);
         return true;
     }
 
     @Override protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
+        if (intent.getBooleanExtra("demo", false)) {
+            demo = true;
+            String theme = intent.getStringExtra("theme");
+            if ("light".equals(theme) || "dark".equals(theme)) Prefs.setTheme(theme);
+            boolean night = HomeData.isNight(Prefs.theme(), System.currentTimeMillis(), 0, 0);
+            canvas.setNight(night);
+            canvas.demo(intent.getStringExtra("shot"), night);
+            return;
+        }
+        if (demo) return;
         if (!searchFor(intent) && intent.getBooleanExtra(EXTRA_VOICE, false)) listen();
     }
 
     @Override protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
+        if (recognizer != null) recognizer.destroy();
+        if (tts != null) tts.shutdown();
         io.shutdownNow();
         super.onDestroy();
     }
 
-    @Override public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (RemoteKeys.voiceKey(keyCode)) {
-            listen();
+    @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event != null && RemoteKeys.voiceKey(event.getKeyCode())) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) listen();
             return true;
         }
-        return super.onKeyDown(keyCode, event);
+        if (canvas != null && canvas.onKey(event)) return true;
+        return super.dispatchKeyEvent(event);
     }
 
-    private View build() {
-        LinearLayout page = new LinearLayout(this);
-        page.setOrientation(LinearLayout.VERTICAL);
-        page.setBackgroundColor(BG);
-        page.setPadding(px(80), px(64), px(80), 0);
-        page.setClipChildren(false);
-        page.setClipToPadding(false);
-
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setClipChildren(false);
-
-        FrameLayout box = new FrameLayout(this);
-        box.setBackground(round(FIELD, px(42)));
-        ImageView glass = symbol("search", DIM);
-        FrameLayout.LayoutParams glassAt = new FrameLayout.LayoutParams(px(34), px(34), Gravity.CENTER_VERTICAL | Gravity.START);
-        glassAt.leftMargin = px(32);
-        box.addView(glass, glassAt);
-        field = new EditText(this);
-        field.setBackground(null);
-        field.setSingleLine(true);
-        field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        field.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
-        field.setTextColor(INK);
-        field.setHintTextColor(DIM);
-        field.setHint(Ui.tr("Search movies, shows and apps"));
-        field.setTypeface(Ui.medium);
-        field.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(32));
-        field.setPadding(px(84), 0, px(28), 0);
-        field.addTextChangedListener(new TextWatcher() {
-            @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) {}
-            @Override public void onTextChanged(CharSequence s, int a, int b, int c) {}
-            @Override public void afterTextChanged(Editable s) {
-                handler.removeCallbacks(typed);
-                showApps(s.toString());
-                if (s.toString().trim().length() >= 2) handler.postDelayed(typed, TYPING_PAUSE);
-                else titlesRow.removeAllViews();
-            }
-        });
-        field.setOnEditorActionListener((v, action, e) -> {
-            handler.removeCallbacks(typed);
-            run(field.getText().toString(), false);
-            return true;
-        });
-        field.setOnFocusChangeListener((v, has) -> box.setBackground(round(has ? 0xFF2C2C2E : FIELD, px(42))));
-        box.addView(field, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, px(84)));
-        bar.addView(box, new LinearLayout.LayoutParams(0, px(84), 1));
-
-        FrameLayout mic = new FrameLayout(this);
-        mic.setFocusable(true);
-        mic.setBackground(round(FIELD, px(42)));
-        ImageView micIcon = symbol("mic", INK);
-        mic.addView(micIcon, new FrameLayout.LayoutParams(px(24), px(34), Gravity.CENTER));
-        mic.setContentDescription(Ui.tr("Search by voice"));
-        mic.setOnClickListener(v -> listen());
-        mic.setOnFocusChangeListener((v, has) -> {
-            mic.setBackground(round(has ? INK : FIELD, px(42)));
-            micIcon.setColorFilter(has ? DARK : INK, PorterDuff.Mode.SRC_IN);
-            grow(v, has);
-        });
-        LinearLayout.LayoutParams micAt = new LinearLayout.LayoutParams(px(84), px(84));
-        micAt.leftMargin = px(20);
-        bar.addView(mic, micAt);
-
-        assist = pill(Ui.tr("Ask Google Assistant"));
-        assist.setOnClickListener(v -> askAssistant());
-        assist.setVisibility(View.GONE);
-        LinearLayout.LayoutParams assistAt = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, px(84));
-        assistAt.leftMargin = px(20);
-        bar.addView(assist, assistAt);
-        page.addView(bar);
-
-        status = text(DIM, 26, Ui.regular);
-        LinearLayout.LayoutParams statusAt = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        statusAt.topMargin = px(28);
-        page.addView(status, statusAt);
-        titlesTitle = section(page, Ui.tr("Movies & Shows"));
-        titlesRow = row(page);
-        appsTitle = section(page, Ui.tr("Apps"));
-        appsRow = row(page);
-        show(false, false);
-        return page;
-    }
-
-    private TextView section(LinearLayout page, String name) {
-        TextView t = text(INK, 28, Ui.semibold);
-        t.setText(name);
-        LinearLayout.LayoutParams at = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        at.topMargin = px(26);
-        at.bottomMargin = px(14);
-        page.addView(t, at);
-        return t;
-    }
-
-    private LinearLayout row(LinearLayout page) {
-        HorizontalScrollView scroll = new HorizontalScrollView(this);
-        scroll.setHorizontalScrollBarEnabled(false);
-        scroll.setClipChildren(false);
-        scroll.setClipToPadding(false);
-        scroll.setPadding(px(12), px(12), px(12), px(12));
-        LinearLayout line = new LinearLayout(this);
-        line.setOrientation(LinearLayout.HORIZONTAL);
-        line.setClipChildren(false);
-        scroll.addView(line);
-        LinearLayout.LayoutParams at = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        at.leftMargin = -px(12);
-        page.addView(scroll, at);
-        return line;
-    }
-
-    private void show(boolean titles, boolean appsOn) {
-        titlesTitle.setVisibility(titles ? View.VISIBLE : View.GONE);
-        ((View) titlesRow.getParent()).setVisibility(titles ? View.VISIBLE : View.GONE);
-        appsTitle.setVisibility(appsOn ? View.VISIBLE : View.GONE);
-        ((View) appsRow.getParent()).setVisibility(appsOn ? View.VISIBLE : View.GONE);
-    }
-
-    /** The TV's speech recognizer (Google's, when it's there). No recognizer: the field stays so they can type. */
-    private void listen() {
-        long now = SystemClock.uptimeMillis();
-        if (now - listenedAt < 800) return;
-        PackageManager pm = getPackageManager();
-        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
-                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                .putExtra(RecognizerIntent.EXTRA_PROMPT, Ui.tr("Search movies, shows and apps"));
-        Intent google = new Intent(intent).setPackage(KATNISS);
-        if (google.resolveActivity(pm) != null) intent = google;
-        else if (intent.resolveActivity(pm) == null) {
-            status.setText(Ui.tr("Voice search isn't on this TV."));
-            field.requestFocus();
-            return;
-        }
-        try {
-            startActivityForResult(intent, VOICE);
-            listenedAt = now;
-        } catch (ActivityNotFoundException | SecurityException e) {
-            AppLog.w("voice search: " + e.getMessage());
-            status.setText(Ui.tr("Voice search isn't on this TV."));
-            field.requestFocus();
-        }
-    }
-
-    @Override protected void onActivityResult(int request, int result, Intent data) {
-        super.onActivityResult(request, result, data);
-        if (request != VOICE) return;
-        ArrayList<String> said = data == null ? null : data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
-        if (result != RESULT_OK || said == null || said.isEmpty()) {
-            field.requestFocus();
-            return;
-        }
-        String text = said.get(0);
+    @Override public void submit(String query, boolean voice) {
+        if (demo) return;
         handler.removeCallbacks(typed);
-        field.setText(text);
-        field.setSelection(text.length());
-        run(text, true);
-    }
-
-    /** Apps right away. Titles wait for a pause in typing, then one search. "open Netflix" opens that app. */
-    private void run(String raw, boolean spoken) {
-        String query = raw.trim();
-        int gen = ++generation;
-        focusResults = spoken;
-        if (query.isEmpty()) {
-            status.setText("");
-            assist.setVisibility(View.GONE);
-            titlesRow.removeAllViews();
-            appsRow.removeAllViews();
-            show(false, false);
+        pending = query == null ? "" : query.trim();
+        canvas.setQuery(query == null ? "" : query);
+        if (pending.isEmpty()) {
+            showIdle();
             return;
         }
-        assist.setVisibility(View.VISIBLE);
+        showApps(pending, voice);
+        if (pending.length() >= 2) handler.postDelayed(typed, voice ? 0 : TYPING_PAUSE);
+    }
+
+    private final Runnable typed = () -> run(pending, false);
+
+    private void showIdle() {
+        List<String> popular = new ArrayList<>();
+        for (Recs.Pick p : Recs.get(this).now(null)) {
+            if (p.title != null && popular.size() < 6) popular.add(p.title);
+        }
+        canvas.setIdle(Prefs.recentSearches(), popular);
+    }
+
+    private void run(String raw, boolean voice) {
+        String query = raw == null ? "" : raw.trim();
+        int gen = ++generation;
+        if (query.isEmpty()) {
+            showIdle();
+            return;
+        }
+        Prefs.rememberSearch(query);
         String opened = command(query);
         if (opened != null) {
             for (String[] a : apps) {
                 if (a[1].equalsIgnoreCase(opened)) {
-                    openApp(a[0], a[1], field);
+                    openApp(a[0], a[1]);
                     return;
                 }
             }
         }
-        showApps(query);
-        if (query.length() < 2) {
-            status.setText("");
-            titlesRow.removeAllViews();
-            show(false, appsRow.getChildCount() > 0);
-            return;
-        }
-        status.setText(Ui.tr("Searching…"));
+        if (query.length() < 2) return;
+        canvas.show(appHits(query), Ui.tr("Searching…"), "");
         String forTmdb = opened != null ? opened : query;
         io.execute(() -> {
             List<Recs.Pick> found;
@@ -332,18 +178,16 @@ public class SearchActivity extends Activity {
             List<Recs.Pick> hits = found;
             handler.post(() -> {
                 if (gen != generation || isDestroyed()) return;
-                titlesRow.removeAllViews();
                 if (hits == null) {
-                    status.setText(Ui.tr("Couldn't search right now. Ask Google Assistant instead."));
-                    show(false, appsRow.getChildCount() > 0);
+                    canvas.show(appHits(query), Ui.tr("Couldn't search right now. Ask Google Assistant instead."), "");
                     return;
                 }
-                if (hits.isEmpty()) {
-                    finishTitles(gen, spoken);
-                    return;
-                }
-                show(true, appsRow.getChildCount() > 0);
                 AtomicInteger left = new AtomicInteger(hits.size());
+                List<SearchCanvas.Hit> cards = appHits(query);
+                if (hits.isEmpty()) {
+                    finish(gen, voice, query, cards);
+                    return;
+                }
                 for (Recs.Pick p : hits) {
                     io.execute(() -> {
                         try {
@@ -353,8 +197,8 @@ public class SearchActivity extends Activity {
                         }
                         handler.post(() -> {
                             if (gen != generation || isDestroyed()) return;
-                            if (p.detailed) titlesRow.addView(titleCard(p), p.pkg != null ? 0 : titlesRow.getChildCount());
-                            if (left.decrementAndGet() == 0) finishTitles(gen, spoken);
+                            if (p.detailed) cards.add(p.pkg != null ? 0 : cards.size(), hit(p));
+                            if (left.decrementAndGet() == 0) finish(gen, voice, query, cards);
                         });
                     });
                 }
@@ -362,32 +206,84 @@ public class SearchActivity extends Activity {
         });
     }
 
-    private void finishTitles(int gen, boolean spoken) {
+    private void finish(int gen, boolean voice, String query, List<SearchCanvas.Hit> cards) {
         if (gen != generation) return;
-        show(titlesRow.getChildCount() > 0, appsRow.getChildCount() > 0);
-        status.setText(titlesRow.getChildCount() == 0 && appsRow.getChildCount() == 0
-                ? Ui.tr("Nothing on your apps. Ask Google Assistant instead.") : note);
-        if (spoken) {
-            View first = titlesRow.getChildCount() > 0 ? titlesRow.getChildAt(0)
-                    : appsRow.getChildCount() > 0 ? appsRow.getChildAt(0) : assist;
-            first.requestFocus();
+        addStore(query, cards);
+        String reply = "";
+        String status = note;
+        if (cards.isEmpty()) status = Ui.trf("No matches for “{query}”", "query", query);
+        else if (voice) {
+            for (SearchCanvas.Hit h : cards) {
+                if (h.pick != null) {
+                    reply = h.show ? Ui.trf("It's a show: {title}.", "title", h.title)
+                            : Ui.trf("It's a movie: {title}.", "title", h.title);
+                    break;
+                }
+            }
+            if (!reply.isEmpty()) speak(reply);
         }
+        canvas.show(cards, status, reply);
     }
 
-    private void showApps(String raw) {
-        appsRow.removeAllViews();
-        String query = raw.trim();
-        if (query.isEmpty()) {
-            show(titlesRow.getChildCount() > 0, false);
-            return;
-        }
+    private void speak(String line) {
+        if (tts == null) tts = new TextToSpeech(this, ok -> {
+            if (ok == TextToSpeech.SUCCESS && tts != null) {
+                tts.speak(line, TextToSpeech.QUEUE_FLUSH, null, "search");
+                canvas.show(lastHits, Ui.tr("Also said aloud · the title is below"), line);
+            }
+        });
+        else tts.speak(line, TextToSpeech.QUEUE_FLUSH, null, "search");
+    }
+
+    private List<SearchCanvas.Hit> lastHits = new ArrayList<>();
+
+    private void showApps(String query, boolean voice) {
+        List<SearchCanvas.Hit> cards = appHits(query);
+        canvas.show(cards, voice ? "" : "", "");
+    }
+
+    private List<SearchCanvas.Hit> appHits(String query) {
+        List<SearchCanvas.Hit> out = new ArrayList<>();
         String q = query.toLowerCase(Locale.ROOT);
         String opened = command(query);
         for (String[] a : apps) {
             String name = a[1].toLowerCase(Locale.ROOT);
-            if (name.contains(q) || (opened != null && name.contains(opened.toLowerCase(Locale.ROOT)))) appsRow.addView(appCard(a[0], a[1]));
+            if (name.contains(q) || (opened != null && name.contains(opened.toLowerCase(Locale.ROOT)))) {
+                SearchCanvas.Hit h = new SearchCanvas.Hit();
+                h.title = a[1];
+                h.label = a[1];
+                h.pkg = a[0];
+                h.app = true;
+                h.meta = Ui.tr("Open");
+                out.add(h);
+            }
         }
-        show(titlesRow.getChildCount() > 0, appsRow.getChildCount() > 0);
+        lastHits = out;
+        return out;
+    }
+
+    /** Known services that are not installed, only when the typed name matches. */
+    private void addStore(String query, List<SearchCanvas.Hit> cards) {
+        String q = query.toLowerCase(Locale.ROOT);
+        for (String[] s : Recs.catalog(this)) {
+            if (s[1] == null || !s[1].toLowerCase(Locale.ROOT).contains(q)) continue;
+            SearchCanvas.Hit h = new SearchCanvas.Hit();
+            h.title = s[1];
+            h.meta = Ui.tr("Get from Play Store");
+            h.store = true;
+            cards.add(h);
+            if (cards.size() > 8) break;
+        }
+    }
+
+    private static SearchCanvas.Hit hit(Recs.Pick p) {
+        SearchCanvas.Hit h = new SearchCanvas.Hit();
+        h.pick = p;
+        h.title = p.title == null ? "" : p.title;
+        h.pkg = p.pkg;
+        h.show = "tv".equals(p.kind);
+        h.meta = p.pkg != null ? Recs.serviceName(p) : Ui.tr("Not on your apps");
+        return h;
     }
 
     private static String command(String query) {
@@ -398,256 +294,135 @@ public class SearchActivity extends Activity {
         return null;
     }
 
-    private void askAssistant() {
-        String query = field.getText().toString().trim();
-        try {
-            startActivity(new Intent("android.search.action.GLOBAL_SEARCH").putExtra("query", query).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-            finish();
-        } catch (ActivityNotFoundException e) {
-            status.setText(Ui.tr("Google Assistant isn't on this TV."));
-        }
-    }
-
-    private void openApp(String pkg, String label, View from) {
-        HomeApps.open(this, HomeApps.app(pkg, label), from, 0, 0, from.getWidth(), from.getHeight());
-    }
-
-    private View appCard(String pkg, String label) {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        FrameLayout frame = frame(px(256), px(144));
-        ImageView image = new ImageView(this);
-        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        image.setBackgroundColor(FIELD);
-        frame.addView(image, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        card.addView(frame);
-        TextView name = text(INK, 24, Ui.medium);
-        name.setText(label);
-        name.setPadding(0, px(10), 0, 0);
-        card.addView(name);
-        focusable(card, frame, px(256));
-        card.setOnClickListener(v -> openApp(pkg, label, frame));
-        io.execute(() -> {
-            Bitmap b = banner(pkg);
-            handler.post(() -> { if (!isDestroyed()) image.setImageBitmap(b); });
-        });
-        return card;
-    }
-
-    private View titleCard(Recs.Pick p) {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        FrameLayout frame = frame(px(400), px(225));
-        ImageView image = new ImageView(this);
-        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        image.setBackgroundColor(FIELD);
-        frame.addView(image, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        card.addView(frame);
-        TextView name = text(INK, 24, Ui.medium);
-        name.setText(p.title);
-        name.setPadding(0, px(10), 0, 0);
-        name.setMaxWidth(px(400));
-        card.addView(name);
-        TextView where = text(DIM, 21, Ui.regular);
-        where.setText(p.pkg != null ? Recs.serviceName(p) : Ui.tr("Not on your apps"));
-        where.setMaxWidth(px(400));
-        card.addView(where);
-        if (p.pkg == null) frame.setAlpha(0.45f);
-        focusable(card, frame, px(400));
-        card.setOnClickListener(v -> openTitle(p, frame));
-        loadPhoto(image, Recs.smallImage(p), Recs.posterImage(p));
-        return card;
-    }
-
-    /** The title's own page, looked up now if it isn't remembered yet, then the app. */
-    private void openTitle(Recs.Pick p, View from) {
-        if (p.pkg == null) {
-            status.setText(Ui.trf("{title} isn't on your TV's apps.", "title", p.title));
+    @Override public void open(SearchCanvas.Hit hit) {
+        if (demo || hit == null) return;
+        if (hit.store) {
+            try {
+                startActivity(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("market://search?q=" + android.net.Uri.encode(hit.title)))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            } catch (ActivityNotFoundException e) {
+                canvas.show(lastHits, Ui.tr("Nothing on your apps. Ask Google Assistant instead."), "");
+            }
             return;
         }
+        if (hit.app) {
+            openApp(hit.pkg, hit.label);
+            return;
+        }
+        if (hit.pick == null || hit.pick.pkg == null) {
+            canvas.show(lastHits, Ui.trf("{title} isn't on your TV's apps.", "title", hit.title), "");
+            return;
+        }
+        Recs.Pick p = hit.pick;
         io.execute(() -> {
             Recs.get(this).ensureLink(p);
             handler.post(() -> {
                 if (isDestroyed()) return;
-                HomeApps.open(this, HomeApps.app(p.pkg, Recs.serviceName(p), p.link), from, 0, 0, from.getWidth(), from.getHeight());
+                HomeApps.open(this, HomeApps.app(p.pkg, Recs.serviceName(p), p.link), null);
             });
         });
     }
 
-    private FrameLayout frame(int w, int h) {
-        FrameLayout frame = new FrameLayout(this);
-        frame.setLayoutParams(new LinearLayout.LayoutParams(w, h));
-        frame.setOutlineProvider(new ViewOutlineProvider() {
-            @Override public void getOutline(View v, Outline o) {
-                o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), px(14));
-            }
-        });
-        // Clip only once the card has a size. An empty outline (applied before layout) draws nothing, so the photo
-        // never appears. Rounded corners stay.
-        frame.setClipToOutline(false);
-        frame.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
-            boolean sized = r - l > 0 && b - t > 0;
-            if (v.getClipToOutline() != sized) v.setClipToOutline(sized);
-            v.invalidateOutline();
-        });
-        GradientDrawable ring = new GradientDrawable();
-        ring.setCornerRadius(px(14));
-        ring.setStroke(px(4), INK);
-        ring.setColor(0);
-        frame.setForeground(ring);
-        frame.getForeground().setAlpha(0);
-        return frame;
+    private void openApp(String pkg, String label) {
+        HomeApps.open(this, HomeApps.app(pkg, label), null);
     }
 
-    private void focusable(LinearLayout card, FrameLayout frame, int width) {
-        card.setFocusable(true);
-        LinearLayout.LayoutParams at = new LinearLayout.LayoutParams(width, ViewGroup.LayoutParams.WRAP_CONTENT);
-        at.rightMargin = px(32);
-        card.setLayoutParams(at);
-        card.setOnFocusChangeListener((v, has) -> {
-            frame.getForeground().setAlpha(has ? 255 : 0);
-            grow(v, has);
-            if (has && v.getParent() instanceof ViewGroup) ((ViewGroup) v.getParent()).requestChildFocus(v, v);
-        });
-    }
-
-    private void grow(View v, boolean focused) {
-        v.animate().scaleX(focused ? 1.06f : 1).scaleY(focused ? 1.06f : 1).setDuration(150).start();
-    }
-
-    private TextView pill(String label) {
-        TextView t = text(INK, 26, Ui.medium);
-        t.setText(label);
-        t.setGravity(Gravity.CENTER);
-        t.setPadding(px(34), 0, px(34), 0);
-        t.setFocusable(true);
-        t.setBackground(round(FIELD, px(42)));
-        t.setOnFocusChangeListener((v, has) -> {
-            t.setBackground(round(has ? INK : FIELD, px(42)));
-            t.setTextColor(has ? DARK : INK);
-            grow(v, has);
-        });
-        return t;
-    }
-
-    private TextView text(int color, float size, android.graphics.Typeface face) {
-        TextView t = new TextView(this);
-        t.setTextColor(color);
-        t.setTypeface(face);
-        t.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(size));
-        t.setSingleLine(true);
-        t.setEllipsize(TextUtils.TruncateAt.END);
-        return t;
-    }
-
-    private ImageView symbol(String name, int color) {
-        ImageView v = new ImageView(this);
-        v.setImageBitmap(Symbols.get(this, name));
-        v.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        v.setColorFilter(color, PorterDuff.Mode.SRC_IN);
-        return v;
-    }
-
-    private static GradientDrawable round(int color, float radius) {
-        GradientDrawable d = new GradientDrawable();
-        d.setColor(color);
-        d.setCornerRadius(radius);
-        return d;
-    }
-
-    private int px(float v) {
-        return Math.round(v * k);
-    }
-
-    private Bitmap banner(String pkg) {
-        PackageManager pm = getPackageManager();
+    @Override public void ask(String query) {
+        if (demo) return;
         try {
-            Drawable d = pm.getApplicationBanner(pkg);
-            boolean icon = d == null;
-            if (icon) d = pm.getApplicationIcon(pkg);
-            int w = px(256), h = px(144);
-            Bitmap b = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
-            Canvas c = new Canvas(b);
-            if (icon) {
-                c.drawColor(FIELD);
-                int s = px(88);
-                d.setBounds((w - s) / 2, (h - s) / 2, (w + s) / 2, (h + s) / 2);
-            } else d.setBounds(0, 0, w, h);
-            d.draw(c);
-            return b;
-        } catch (Exception e) {
-            return null;
+            startActivity(new Intent("android.search.action.GLOBAL_SEARCH").putExtra("query", query == null ? "" : query.trim())
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+            finish();
+        } catch (ActivityNotFoundException e) {
+            canvas.show(lastHits, Ui.tr("Google Assistant isn't on this TV."), "");
         }
     }
 
-    /** Backdrop first, then the poster. Failures go to logcat (`adb logcat -s FreeMyTV` and look for `search image`). */
-    private void loadPhoto(ImageView image, String url, String fallback) {
-        Bitmap cached = url.isEmpty() ? null : images.get(url);
-        if (cached != null) {
-            image.setImageBitmap(cached);
+    @Override public void listen() {
+        if (demo) return;
+        long now = SystemClock.uptimeMillis();
+        if (now - listenedAt < 800) return;
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[] {Manifest.permission.RECORD_AUDIO}, MIC);
             return;
         }
-        io.execute(() -> {
-            Bitmap b = download(url);
-            String used = url;
-            if (b == null && fallback != null && !fallback.isEmpty() && !fallback.equals(url)) {
-                b = download(fallback);
-                used = fallback;
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            listenOverlay();
+            return;
+        }
+        if (recognizer != null) recognizer.destroy();
+        recognizer = SpeechRecognizer.createSpeechRecognizer(this);
+        recognizer.setRecognitionListener(new RecognitionListener() {
+            @Override public void onReadyForSpeech(Bundle params) { canvas.setListening(true, ""); }
+            @Override public void onBeginningOfSpeech() {}
+            @Override public void onRmsChanged(float rmsdB) {}
+            @Override public void onBufferReceived(byte[] buffer) {}
+            @Override public void onEndOfSpeech() {}
+            @Override public void onError(int error) { canvas.setListening(false, ""); }
+            @Override public void onResults(Bundle results) { heard(results); }
+            @Override public void onPartialResults(Bundle partial) {
+                ArrayList<String> said = partial == null ? null : partial.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                if (said != null && !said.isEmpty()) canvas.setListening(true, said.get(0));
             }
-            if (b == null) {
-                AppLog.w("search image: no picture" + (url.isEmpty() ? "" : " for " + url));
-                return;
-            }
-            AppLog.w("search image: " + b.getWidth() + "x" + b.getHeight());
-            images.put(used, b);
-            Bitmap show = b;
-            handler.post(() -> { if (!isDestroyed()) image.setImageBitmap(show); });
+            @Override public void onEvent(int eventType, Bundle params) {}
         });
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+        canvas.setListening(true, "");
+        listenedAt = SystemClock.uptimeMillis();
+        recognizer.startListening(intent);
     }
 
-    /**
-     * Same read as the home screen's photos: the body, not the status line first. Checking the status before the body
-     * came back empty on some TVs, the decode then returned nothing, and the miss was thrown away.
-     */
-    private Bitmap download(String url) {
-        if (url == null || url.isEmpty()) return null;
-        HttpURLConnection c = null;
+    private void heard(Bundle results) {
+        canvas.setListening(false, "");
+        ArrayList<String> said = results == null ? null : results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+        if (said == null || said.isEmpty()) return;
+        pending = said.get(0);
+        canvas.setQuery(pending);
+        run(pending, true);
+    }
+
+    @Override public void cancelListen() {
+        if (recognizer != null) recognizer.cancel();
+        canvas.setListening(false, "");
+    }
+
+    /** The TV's speech screen (Google's, when it's there). No recognizer: they can still type. */
+    private void listenOverlay() {
+        PackageManager pm = getPackageManager();
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                .putExtra(RecognizerIntent.EXTRA_PROMPT, Ui.tr("Search movies, shows and apps"));
+        Intent google = new Intent(intent).setPackage(KATNISS);
+        if (google.resolveActivity(pm) != null) intent = google;
+        else if (intent.resolveActivity(pm) == null) {
+            canvas.show(lastHits, Ui.tr("Voice search isn't on this TV."), "");
+            return;
+        }
         try {
-            c = (HttpURLConnection) new URL(url).openConnection();
-            c.setConnectTimeout(8000);
-            c.setReadTimeout(15000);
-            c.setInstanceFollowRedirects(true);
-            byte[] bytes;
-            try (InputStream in = c.getInputStream()) {
-                bytes = readBytes(in);
-            }
-            if (bytes.length == 0) {
-                AppLog.w("search image: empty response");
-                return null;
-            }
-            BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
-            BitmapFactory.Options o = new BitmapFactory.Options();
-            int sample = 1;
-            while (bounds.outWidth / sample > 800 && sample < 16) sample *= 2;
-            o.inSampleSize = sample;
-            Bitmap b = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, o);
-            if (b == null) AppLog.w("search image: undecodable " + bytes.length + " bytes");
-            return b;
-        } catch (Exception e) {
-            AppLog.w("search image: " + (e.getMessage() == null ? e.toString() : e.getMessage()));
-            return null;
-        } finally {
-            if (c != null) c.disconnect();
+            startActivityForResult(intent, VOICE);
+            listenedAt = SystemClock.uptimeMillis();
+        } catch (ActivityNotFoundException | SecurityException e) {
+            AppLog.w("voice search: " + e.getMessage());
+            canvas.show(lastHits, Ui.tr("Voice search isn't on this TV."), "");
         }
     }
 
-    private static byte[] readBytes(InputStream in) throws java.io.IOException {
-        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
-        byte[] buf = new byte[8192];
-        int n;
-        while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
-        return out.toByteArray();
+    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] results) {
+        super.onRequestPermissionsResult(request, permissions, results);
+        if (request != MIC) return;
+        if (results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED) listen();
+        else listenOverlay();
+    }
+
+    @Override protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request != VOICE || result != RESULT_OK || data == null) return;
+        ArrayList<String> said = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+        if (said == null || said.isEmpty()) return;
+        pending = said.get(0);
+        canvas.setQuery(pending);
+        run(pending, true);
     }
 }

@@ -73,8 +73,13 @@ final class RemoteKeys {
      * Google TV's home stays on only where this service runs and can take the Home key back. Elsewhere the switch
      * turns that home off as usual, even if keep_google_home is set.
      */
+    /** The key service can take Home back from Google's home app on this TV. */
+    static boolean keepGooglePossible() {
+        return supported() && FILTER_SAFE;
+    }
+
     static boolean keepGoogleHome() {
-        return Prefs.keepGoogleHome() && supported() && FILTER_SAFE;
+        return Prefs.keepGoogleHome() && keepGooglePossible();
     }
 
     /** The key service is on only where the filter is safe, and while it has work (a button, or Google's home left on). */

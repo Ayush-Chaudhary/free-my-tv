@@ -5,6 +5,8 @@
     android:versionName="1.2">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Search by voice on the search screen. If the person says no, search falls back to the system's voice screen. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- After the TV boots (and after a TV update), checks that Free My TV mode is still as you left it. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
