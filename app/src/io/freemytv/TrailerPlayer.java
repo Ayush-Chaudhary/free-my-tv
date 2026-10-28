@@ -134,6 +134,7 @@ final class TrailerPlayer {
 
     private final Runnable start = this::start;
     private final Runnable pop = this::pop;
+    private final Runnable reveal = this::reveal;
     private final Runnable sleep = this::sleep;
     private final Runnable release = this::dropPlayer;
 
@@ -156,9 +157,19 @@ final class TrailerPlayer {
         wake();
         loadedId = id;
         placeOnCard();
-        String call = String.format(Locale.US, "play('%s',%s)", id, soundOn ? "true" : "false");
-        if (pageReady) web.evaluateJavascript(call, null);
-        else pendingCall = call;
+        // inset and radius crop the 16:9 picture down to the card. On a TCL the TV composites that picture itself
+        // and ignores the view's scale, so without the crop the bigger preview never opens.
+        String call = String.format(Locale.US, "play('%s',%s,%.2f,%.1f)", id, soundOn ? "true" : "false", cardInset(), cardRadius());
+        if (pageReady) {
+            web.evaluateJavascript(call, null);
+            armReveal();
+        } else pendingCall = call;
+    }
+
+    /** Opens the preview if YouTube never reports PLAYING. Not before the page has the play() call. */
+    private void armReveal() {
+        handler.removeCallbacks(reveal);
+        handler.postDelayed(reveal, 2200);
     }
 
     private Recs.Pick focused() {
@@ -168,6 +179,7 @@ final class TrailerPlayer {
     private void stop(boolean animate) {
         handler.removeCallbacks(start);
         handler.removeCallbacks(pop);
+        handler.removeCallbacks(reveal);
         forKey = null;
         pendingCall = null;
         boolean was = loadedId != null;
@@ -176,6 +188,7 @@ final class TrailerPlayer {
         if (box != null) {
             box.animate().cancel();
             if (animate && box.getAlpha() > 0) {
+                if (web != null) web.evaluateJavascript(String.format(Locale.US, "shape(%.2f,%.1f,%d)", cardInset(), cardRadius(), 300), null);
                 box.animate().scaleX(cardScale()).scaleY(cardScale())
                         .translationX(cardAt.centerX() - window.centerX()).translationY(cardAt.centerY() - window.centerY())
                         .alpha(0).setDuration(300).setInterpolator(EASE)
@@ -238,9 +251,11 @@ final class TrailerPlayer {
         web.addJavascriptInterface(new Bridge(), "FreeMyTV");
         web.setWebViewClient(new android.webkit.WebViewClient() {
             @Override public void onPageFinished(WebView view, String url) {
+                boolean starting = pendingCall != null;
                 pageReady = true;
-                if (pendingCall != null && web != null) web.evaluateJavascript(pendingCall, null);
+                if (starting && web != null) web.evaluateJavascript(pendingCall, null);
                 pendingCall = null;
+                if (starting) armReveal();
             }
 
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
@@ -343,12 +358,21 @@ final class TrailerPlayer {
         return 18 * home.uiScale() * 1.05f / cardScale() / home.getResources().getDisplayMetrics().density;
     }
 
+    /** Fade the player in, then open the 16:9 preview. Also runs if YouTube never reports PLAYING. */
+    private void reveal() {
+        if (loadedId == null || box == null || popped || !home.homeRunning()) return;
+        if (box.getAlpha() < 1f) box.animate().alpha(1).setDuration(400).setInterpolator(EASE).start();
+        handler.removeCallbacks(pop);
+        handler.postDelayed(pop, POP_AFTER);
+    }
+
     private void pop() {
         if (box == null || loadedId == null || web == null || !home.homeRunning()) return;
         popped = true;
         popPick = focused();
         popAboutLayout = null;
         info.invalidate();
+        web.evaluateJavascript("shape(0,0," + POP_MS + ")", null);
         box.animate().scaleX(1).scaleY(1).translationX(0).translationY(0).alpha(1)
                 .setDuration(POP_MS).setInterpolator(EASE).start();
         fade(1, POP_MS);
@@ -496,6 +520,7 @@ final class TrailerPlayer {
         handler.removeCallbacks(sleep);
         handler.removeCallbacks(release);
         handler.removeCallbacks(pop);
+        handler.removeCallbacks(reveal);
         applyBackdrop(0);
         blurStep = -1;
         WebView dead = web;
@@ -529,13 +554,9 @@ final class TrailerPlayer {
         @JavascriptInterface public void playing(String id) {
             if (id == null || !YOUTUBE_ID.matcher(id).matches()) return;
             handler.post(() -> {
-                if (loadedId == null || !loadedId.equals(id) || box == null) return;
-                handler.postDelayed(() -> {
-                    if (!id.equals(loadedId) || box == null || box.getAlpha() >= 1) return;
-                    box.animate().alpha(1).setDuration(400).setInterpolator(EASE).start();
-                    handler.removeCallbacks(pop);
-                    handler.postDelayed(pop, POP_AFTER);
-                }, 700);
+                if (loadedId == null || !loadedId.equals(id) || box == null || popped) return;
+                handler.removeCallbacks(reveal);
+                handler.postDelayed(reveal, 700);
             });
         }
 
@@ -576,7 +597,7 @@ final class TrailerPlayer {
     }
 
     /**
-     * YouTube's player at full volume, so the TV's own volume sets how loud it is. shape() crops the 16:9 video to the
+     * YouTube's player, muted unless trailers are set to play with sound. shape() crops the 16:9 video to the
      * card; with no crop and no mask the TV composites the video itself (a mask made a TCL redraw every frame).
      */
     private static final String PAGE = "<!doctype html><html><head><style>"
@@ -588,13 +609,16 @@ final class TrailerPlayer {
             + "function fit(){var W=innerWidth,H=innerHeight,vw=Math.max(W,H*16/9),vh=vw*9/16,f=document.getElementById('p');"
             + "if(!f)return;f.style.width=vw+'px';f.style.height=vh+'px';f.style.left=((W-vw)/2)+'px';f.style.top=((H-vh)/2)+'px';}"
             + "function onYouTubeIframeAPIReady(){ready=true;if(pending){var a=pending;pending=null;play.apply(null,a);}}"
-            + "var muted=true;function sound(p){if(!p)return;if(muted){p.mute();p.setVolume(0);}else{p.unMute();p.setVolume(100);}}"
+            + "function shape(i,r,ms){var c=document.getElementById('c');c.style.transition=ms?'clip-path '+ms+'ms " + CSS_EASE + "':'none';"
+            + "c.ontransitionend=null;c.style.clipPath='inset('+i+'% 0 round '+r+'px)';"
+            + "if(i==0&&ms)c.ontransitionend=function(){c.ontransitionend=null;c.style.clipPath='none';};}"
+            + "var muted=true,current='';function sound(p){if(!p)return;if(muted){p.mute();p.setVolume(0);}else{p.unMute();p.setVolume(100);}}"
             + "function setMuted(m){muted=!!m;if(player)sound(player);}"
-            + "function play(k,withSound){muted=!withSound;if(!ready){pending=[k,withSound];return;}fit();"
+            + "function play(k,withSound,i,r){current=k;muted=!withSound;shape(i,r,0);if(!ready){pending=[k,withSound,i,r];return;}fit();"
             + "if(!player){player=new YT.Player('p',{videoId:k,playerVars:{autoplay:1,controls:0,disablekb:1,fs:0,rel:0,playsinline:1,iv_load_policy:3,cc_load_policy:0},events:{"
             + "onReady:function(e){fit();sound(e.target);e.target.playVideo();},"
-            + "onStateChange:function(e){var id=(player&&player.getVideoData)?player.getVideoData().video_id:'';"
-            + "if(e.data==1){sound(player);FreeMyTV.playing(id);}if(e.data==0)FreeMyTV.ended(id);},"
+            + "onStateChange:function(e){var id=(player&&player.getVideoData&&player.getVideoData().video_id)||current;"
+            + "if(e.data==1){sound(player);FreeMyTV.playing(id);}if(e.data==0)FreeMyTV.ended(id||current);},"
             + "onError:function(){FreeMyTV.failed();}}});}else{player.loadVideoById(k);sound(player);}}"
             + "setInterval(function(){if(player&&player.getDuration){var d=player.getDuration();if(d>0)FreeMyTV.progress(''+player.getCurrentTime(),''+d);}},500);"
             + "function stop(){pending=null;if(player&&player.stopVideo)player.stopVideo();}</script></body></html>";
