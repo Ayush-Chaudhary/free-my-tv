@@ -52,7 +52,7 @@ public class VoiceKeyActivity extends Activity {
         AppLog.w("assistant button: " + in.getAction() + (extras == null ? "" : " " + extras.keySet()));
         if (on() && HomeRole.held(this)) {
             String query = in.getStringExtra(SearchManager.QUERY);
-            Intent search = new Intent(this, SearchActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            Intent search = SearchActivity.front(new Intent(this, SearchActivity.class));
             if (query != null && !query.trim().isEmpty()) search.putExtra(SearchActivity.EXTRA_QUERY, query.trim());
             else search.putExtra(SearchActivity.EXTRA_VOICE, true);
             startActivity(search);

@@ -215,7 +215,7 @@ public class SettingsActivity extends Activity {
         private static final int G_HOME = 1, G_SHELF = 2, G_TOP = 3, G_THEME = 4, G_LANG = 5, G_SOUNDS = 6;
         private static final int G_TMDB = 10, G_CARDS = 11, G_FROM = 12, G_TRAILERS = 13, G_WATCH = 14;
         private static final int G_WEATHER = 20, G_CITY = 21, G_TEMP = 22, G_FORECAST = 23, G_PLAYING = 24, G_QUOTES = 25, G_COIN = 26;
-        private static final int G_PREVIEW = 40, G_SAVER_ART = 43, G_PHOTOS = 41, G_SLEEP = 42, G_REMOTE = 50;
+        private static final int G_PREVIEW = 40, G_SAVER_ART = 43, G_PHOTOS = 41, G_SLEEP = 42, G_REMOTE = 50, G_ASSIST = 60;
         private static final int G_KEEP = 70, G_LOW = 71, G_UPDATES = 72, G_TV = 73;
         private static final String[] LOOKS = {"dark", "light"}, TRAILER_VALUES = {"on", "muted", "off"};
         private Shader settingsBg;
@@ -756,6 +756,7 @@ public class SettingsActivity extends Activity {
                 settingsBg = null;
                 SleepOverlay.update(getContext());
             } else if (id == G_SOUNDS) Prefs.setSounds(!Prefs.sounds());
+            else if (id == G_ASSIST) toggleAssistButton();
             else if (id == G_CARDS) {
                 int n = Prefs.cards() - 3, span = Recs.MAX_CARDS - 2;
                 Prefs.setCards(3 + (n + dir + span) % span);
@@ -824,6 +825,7 @@ public class SettingsActivity extends Activity {
                 case 4:
                     if (!RemoteKeys.supported()) ids.add(G_REMOTE);
                     else for (int i = 0; i < Prefs.KEYS.length && i < keyLabels().length; i++) ids.add(G_REMOTE + i);
+                    if (RemoteKeys.supported() && VoiceKeyActivity.offered()) ids.add(G_ASSIST);
                     break;
                 default:
                     ids.add(G_KEEP); ids.add(G_LOW); ids.add(G_UPDATES); ids.add(G_TV);
@@ -893,7 +895,8 @@ public class SettingsActivity extends Activity {
                 case G_LOW: return Ui.tr("Low-memory mode");
                 case G_UPDATES: return Ui.tr("Updates");
                 case G_TV: return Ui.tr("TV Settings");
-                case G_REMOTE: return Ui.tr("Remote Buttons");
+                case G_REMOTE: return RemoteKeys.supported() ? keyLabels()[0] : Ui.tr("Remote Buttons");
+                case G_ASSIST: return Ui.tr("Assistant button");
                 default:
                     if (id >= G_REMOTE && id - G_REMOTE < keyLabels().length) return keyLabels()[id - G_REMOTE];
                     return "";
@@ -946,6 +949,7 @@ public class SettingsActivity extends Activity {
                 case G_SAVER_ART: return Prefs.saverTitles() ? Ui.tr("Movie & show art") : Ui.tr("Nature scenery");
                 case G_SLEEP: return sleepLeft > 0 ? Ui.trf("{time} left", "time", SleepTimer.duration(sleepLeft)) : Ui.tr("Off");
                 case G_KEEP: return onOff(Prefs.keepGoogleHome());
+                case G_ASSIST: return Prefs.assistButton() ? Ui.tr("Search") : Ui.tr("Google Assistant");
                 case G_LOW: return onOff(Prefs.lowMemory());
                 case G_UPDATES: return updatesValue();
                 default:

@@ -35,6 +35,16 @@ What was tried (all on the TV, injected 231 unless said):
 | Real remote: TCL Channel button set to *Search* | our search, listening: PASS |
 | Original mode | not tried (needs a mode switch) |
 
+After rebasing onto the redesign (PRs #3 and #6), retested on the TV:
+
+| Test | Result |
+|---|---|
+| *Settings → Remote* pane lists the Assistant button row, and the first row reads "Netflix button" | PASS (both were missing or wrong in the new pane) |
+| TCL Channel button with Google's old voice screen left in the app's task | our search, listening (it used to bring Google's screen back): PASS |
+| First press after install | Android asks for the mic once; with it allowed, the search's own listener shows the words and stops by itself |
+| Real remote: TCL Channel button, say a title, wait | words shown, searched, mic closed: PASS |
+| Back from that search | Free My TV's home, and the old task is gone: PASS |
+
 ## Recommendation (before the TV test)
 
 **Answer the intent, not the key.** The button never reaches an app as a key, but the system turns it into an
