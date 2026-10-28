@@ -94,6 +94,7 @@ public class SettingsActivity extends Activity {
         // From ADB: am start -n io.freemytv/.SettingsActivity --ez screensaver true (straight to the preview).
         if (preview == null && getIntent().getBooleanExtra("screensaver", false)) {
             getIntent().removeExtra("screensaver");
+            if (getIntent().getBooleanExtra("demo", false)) Scenery.demo(this);
             view.pause();
             showPreview();
         }
@@ -214,7 +215,7 @@ public class SettingsActivity extends Activity {
         private static final int G_HOME = 1, G_SHELF = 2, G_TOP = 3, G_THEME = 4, G_LANG = 5, G_SOUNDS = 6;
         private static final int G_TMDB = 10, G_CARDS = 11, G_FROM = 12, G_TRAILERS = 13, G_WATCH = 14;
         private static final int G_WEATHER = 20, G_CITY = 21, G_TEMP = 22, G_FORECAST = 23, G_PLAYING = 24, G_QUOTES = 25, G_COIN = 26;
-        private static final int G_PREVIEW = 40, G_PHOTOS = 41, G_SLEEP = 42, G_REMOTE = 50;
+        private static final int G_PREVIEW = 40, G_SAVER_ART = 43, G_PHOTOS = 41, G_SLEEP = 42, G_REMOTE = 50;
         private static final int G_KEEP = 70, G_LOW = 71, G_UPDATES = 72, G_TV = 73;
         private static final String[] LOOKS = {"dark", "light"}, TRAILER_VALUES = {"on", "muted", "off"};
         private Shader settingsBg;
@@ -749,7 +750,11 @@ public class SettingsActivity extends Activity {
                 if (at < 0) at = 1;
                 Prefs.setTrailers(TRAILER_VALUES[(at + dir + TRAILER_VALUES.length) % TRAILER_VALUES.length]);
             } else if (id == G_WATCH) Prefs.setSaverWatch(!Prefs.saverWatch());
-            else if (id == G_WEATHER) Prefs.setWeather(!Prefs.weather());
+            else if (id == G_SAVER_ART) {
+                String[] arts = {Prefs.SAVER_SCENERY, Prefs.SAVER_TITLES};
+                int at = Prefs.saverTitles() ? 1 : 0;
+                Prefs.setSaverArt(arts[(at + dir + arts.length) % arts.length]);
+            } else if (id == G_WEATHER) Prefs.setWeather(!Prefs.weather());
             else if (id == G_TEMP) {
                 int at = java.util.Arrays.asList(UNITS).indexOf(Prefs.temperature());
                 Prefs.setTemperature(UNITS[(at + dir + UNITS.length) % UNITS.length]);
@@ -800,7 +805,7 @@ public class SettingsActivity extends Activity {
                     if (dollar()) ids.add(G_COIN + 3);
                     break;
                 case 3:
-                    ids.add(G_PREVIEW); ids.add(G_PHOTOS); ids.add(G_SLEEP);
+                    ids.add(G_PREVIEW); ids.add(G_SAVER_ART); ids.add(G_PHOTOS); ids.add(G_SLEEP);
                     break;
                 case 4:
                     if (!RemoteKeys.supported()) ids.add(G_REMOTE);
@@ -867,6 +872,7 @@ public class SettingsActivity extends Activity {
                 case G_COIN + 2: return "Solana";
                 case G_COIN + 3: return Ui.tr("Dollar");
                 case G_PREVIEW: return Ui.tr("Screensaver");
+                case G_SAVER_ART: return Ui.tr("Screensaver pictures");
                 case G_PHOTOS: return Ui.tr("My Photos");
                 case G_SLEEP: return Ui.tr("Sleep Timer");
                 case G_KEEP: return Ui.tr("Keep Google TV's home app");
@@ -923,6 +929,7 @@ public class SettingsActivity extends Activity {
                     return photos == 0 ? Ui.tr("photos|None") : Prefs.photos() ? Ui.plural("plural|one:{n} photo|other:{n} photos", photos) : Ui.tr("Off");
                 }
                 case G_PREVIEW: return Ui.tr("Preview");
+                case G_SAVER_ART: return Prefs.saverTitles() ? Ui.tr("Movie & show art") : Ui.tr("Nature scenery");
                 case G_SLEEP: return sleepLeft > 0 ? Ui.trf("{time} left", "time", SleepTimer.duration(sleepLeft)) : Ui.tr("Off");
                 case G_KEEP: return onOff(Prefs.keepGoogleHome());
                 case G_LOW: return onOff(Prefs.lowMemory());

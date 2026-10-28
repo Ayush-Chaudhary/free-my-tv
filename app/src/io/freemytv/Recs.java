@@ -40,7 +40,7 @@ import java.util.concurrent.Executors;
 /**
  * Home screen picks ("This morning / afternoon / tonight"): what's trending this week plus recent releases, only from
  * the streaming apps installed on the TV (Netflix, Prime Video, Disney+, Max, Apple TV, Okko, Hulu, Paramount+, Peacock,
- * Globoplay...), via TMDB (an open movie database that knows what streams where in each country). 3 per hour, or up to 6 (Home Settings).
+ * Globoplay...), via TMDB (an open movie database that knows what streams where in each country). 10 per row, or from 3 up to 10 (Home Settings).
  * "Watch" opens the service's app.
  *
  * Each person uses their own free TMDB key: given on the TV (Home Settings > TMDB key, which the APK on GitHub's
@@ -78,8 +78,8 @@ final class Recs {
 
     // TMDB's own mirror of api.themoviedb.org, on the images' domain: some ISPs block the other name (Jio, #327)
     private static final String API = "https://api.tmdb.org/3";
-    /** The most cards per tab and hour (Prefs.cards() picks how many, 3 by default); the home screen shows 3 at a time and scrolls. */
-    static final int MAX_CARDS = 6;
+    /** The most cards per tab and hour (Prefs.cards() picks how many, 10 by default); the home screen shows a few at a time and scrolls. */
+    static final int MAX_CARDS = 10;
 
     /** The backdrops: on a 720p UI, TMDB's 1280-wide copy shows the same and is lighter to download and decode. */
     private static final String IMAGES = "https://image.tmdb.org/t/p/" + (Backdrop.W <= 1280 ? "w1280" : "original");
@@ -88,13 +88,14 @@ final class Recs {
     private static final int ANIMATION = 16;
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 7;
+    private static final int CACHE_VERSION = 8;
     /** Genres that get their own row, in order. Movies: Action, Comedy, Drama, Thriller, Horror, Science Fiction, Romance, Animation. */
     private static final int[] MOVIE_GENRES = {28, 35, 18, 53, 27, 878, 10749, 16};
     /** Shows: Action & Adventure, Comedy, Drama, Crime, Sci-Fi & Fantasy, Mystery, Animation, Reality. */
     private static final int[] TV_GENRES = {10759, 35, 18, 80, 10765, 9648, 16, 10764};
-    /** A row keeps a few more titles than it shows: some turn out not to be on an app once their details arrive. */
-    private static final int ROW_EXTRA = 4;
+    /** Candidates kept per row, before the ones already shown elsewhere are skipped. Two discover pages, not one. */
+    private static final int ROW_CANDIDATES = 40;
+    private static final int DISCOVER_PAGES = 2;
     /** Watchmode's free plan is 2,500 requests a month. Stop short of it; two requests look up one title. */
     private static final int WATCHMODE_CAP = 2000;
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
@@ -379,7 +380,8 @@ final class Recs {
 
     /**
      * Movies or shows ("movie" / "tv"): each row, up to the home screen's card count, whose app is on the TV
-     * (a title not looked up yet stays, so the row isn't empty while its details arrive).
+     * (a title not looked up yet stays, so the row isn't empty while its details arrive). Movies are filled first,
+     * then shows, and a title kept by an earlier row is skipped so a later row can take the next one.
      */
     List<Row> rows(String kind) {
         List<Row> out = new ArrayList<>();
@@ -388,15 +390,37 @@ final class Recs {
         if (!hasKey(context) || which < 0 || which >= all.size()) return out;
         int n = Prefs.cards();
         Map<String, Boolean> have = new HashMap<>();
-        for (Row r : all.get(which)) {
+        List<Row> flat = new ArrayList<>();
+        List<List<String>> candidates = new ArrayList<>();
+        int[] start = new int[all.size() + 1];
+        for (int t = 0; t < all.size(); t++) {
+            start[t] = flat.size();
+            for (Row r : all.get(t)) {
+                flat.add(r);
+                List<String> ids = new ArrayList<>();
+                for (Pick p : r.picks) if (onTv(p, have)) ids.add(key(p));
+                candidates.add(ids);
+            }
+        }
+        start[all.size()] = flat.size();
+        List<List<String>> chosen = RowFill.assign(candidates, n);
+        for (int i = start[which]; i < start[which + 1] && i < chosen.size(); i++) {
+            Row r = flat.get(i);
+            Map<String, Pick> byKey = new HashMap<>();
+            for (Pick p : r.picks) byKey.put(key(p), p);
             List<Pick> list = new ArrayList<>();
-            for (Pick p : r.picks) {
-                if (list.size() >= n) break;
-                if (!p.detailed || (p.pkg != null && have.computeIfAbsent(p.pkg, this::installed))) list.add(p);
+            for (String id : chosen.get(i)) {
+                Pick p = byKey.get(id);
+                if (p != null) list.add(p);
             }
             if (!list.isEmpty()) out.add(new Row(r.title, list, r.ranked));
         }
         return out;
+    }
+
+    /** A title stays while its details are still coming, and afterwards only if its app is on the TV. */
+    private boolean onTv(Pick p, Map<String, Boolean> have) {
+        return !p.detailed || (p.pkg != null && have.computeIfAbsent(p.pkg, this::installed));
     }
 
     /** The row on screen. Its titles, and the next row's, are fetched ahead of the others. */
@@ -781,14 +805,15 @@ final class Recs {
             List<Row> tabRows = new ArrayList<>();
             List<Pick> top = new ArrayList<>();
             take(top, all, movie ? hotMovies : hotShows);
-            if (top.size() < MAX_CARDS) discoverInto(top, all, kind, "&vote_count.gte=" + (movie ? 200 : 100), common);
+            if (top.size() < ROW_CANDIDATES) discoverInto(top, all, kind, "&vote_count.gte=" + (movie ? 200 : 100), common, 1);
             if (!top.isEmpty()) tabRows.add(new Row(movie ? Ui.tr("Top 10 Movies today") : Ui.tr("Top 10 Shows today"), top, true));
             List<Pick> fresh = new ArrayList<>();
             take(fresh, all, movie ? newMovies : newShows);
-            if (fresh.isEmpty()) {
+            if (fresh.size() < ROW_CANDIDATES) {
                 discoverInto(fresh, all, kind, movie
                         ? "&vote_count.gte=30&primary_release_date.gte=" + day(-365) + "&primary_release_date.lte=" + day(0)
-                        : "&vote_count.gte=20&air_date.gte=" + day(-90) + "&air_date.lte=" + day(0), common);
+                        : "&vote_count.gte=20&air_date.gte=" + day(-90) + "&air_date.lte=" + day(0), common,
+                        fresh.isEmpty() ? 1 : 2);
             }
             if (!fresh.isEmpty()) tabRows.add(new Row(Ui.tr("New this week"), fresh));
             Map<Integer, String> names;
@@ -803,7 +828,7 @@ final class Recs {
                 String name = names.get(g);
                 if (name == null) continue;
                 List<Pick> genreRow = new ArrayList<>();
-                discoverInto(genreRow, all, kind, "&vote_count.gte=" + (movie ? 80 : 40) + "&with_genres=" + g, common);
+                discoverInto(genreRow, all, kind, "&vote_count.gte=" + (movie ? 80 : 40) + "&with_genres=" + g, common, 1);
                 if (!genreRow.isEmpty()) tabRows.add(new Row(genre(name), genreRow));
             }
             built.add(tabRows);
@@ -813,17 +838,30 @@ final class Recs {
 
     private static void take(List<Pick> row, Map<String, Pick> all, List<Pick> from) {
         for (Pick p : from) {
-            if (row.size() >= MAX_CARDS + ROW_EXTRA) return;
+            if (row.size() >= ROW_CANDIDATES) return;
             Pick known = all.get(key(p));
             row.add(known == null ? p : known);
         }
     }
 
-    private void discoverInto(List<Pick> row, Map<String, Pick> all, String kind, String filters, String common) {
+    private void discoverInto(List<Pick> row, Map<String, Pick> all, String kind, String filters, String common, int fromPage) {
+        for (int page = fromPage; page <= DISCOVER_PAGES && row.size() < ROW_CANDIDATES; page++) {
+            if (page > 1) pace();
+            try {
+                fill(row, all, get("/discover/" + kind + "?page=" + page + filters + common).getJSONArray("results"), kind);
+            } catch (Exception e) {
+                AppLog.w("recommendations: " + kind + " row: " + e.getMessage());
+                return;
+            }
+        }
+    }
+
+    /** A short gap so two discover pages don't land on TMDB in the same instant. */
+    private static void pace() {
         try {
-            fill(row, all, get("/discover/" + kind + "?page=1" + filters + common).getJSONArray("results"), kind);
-        } catch (Exception e) {
-            AppLog.w("recommendations: " + kind + " row: " + e.getMessage());
+            Thread.sleep(150);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -831,7 +869,7 @@ final class Recs {
     private static void fill(List<Pick> row, Map<String, Pick> all, JSONArray results, String kind) {
         java.util.Set<String> inRow = new java.util.HashSet<>();
         for (Pick p : row) inRow.add(key(p));
-        for (int i = 0; results != null && i < results.length() && row.size() < MAX_CARDS + ROW_EXTRA; i++) {
+        for (int i = 0; results != null && i < results.length() && row.size() < ROW_CANDIDATES; i++) {
             JSONObject o = results.optJSONObject(i);
             if (o == null) continue;
             String k = kind + ":" + o.optInt("id");
@@ -1412,9 +1450,9 @@ final class Recs {
             if (parts[i].lastModified() < stale) parts[i].delete();
         }
         File[] files = dir.listFiles((d, name) -> !name.endsWith(".part"));
-        if (files == null || files.length <= 60) return;
+        if (files == null || files.length <= 120) return;
         Arrays.sort(files, (a, b) -> Long.compare(a.lastModified(), b.lastModified()));
-        for (int i = 0; i < files.length - 60; i++) {
+        for (int i = 0; i < files.length - 120; i++) {
             //noinspection ResultOfMethodCallIgnored
             files[i].delete();
         }

@@ -3656,7 +3656,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 {0xFF0F3B57, 0xFFE7A35B}, {0xFF071C33, 0xFF2A6FA8}, {0xFF2B0A2E, 0xFFB0306F},
                 {0xFF1F2430, 0xFF8794A8}, {0xFF143028, 0xFF3FA37A}, {0xFF3A2412, 0xFFD08A45}
         };
-        String[] titles = {"The Lantern Coast", "Tidewater Nights", "Velvet Static", "Silver Ridge", "Orchard Line", "Paper Saints"};
         String[] metas = {"Mystery · 3 seasons · Streamly", "Limited series · 6 episodes · Streamly", "Music · 1 h 47 m · Streamly",
                 "Western · S2 · Streamly", "Drama · 2 h 4 m · Primo", "Show · S1 · Galaxy+"};
         String[] about = {
@@ -3667,46 +3666,26 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 "A harvest that was supposed to be quiet.",
                 "The newsroom keeps one story off the air."
         };
-        List<Recs.Pick> movies = new ArrayList<>();
-        List<Recs.Pick> shows = new ArrayList<>();
-        for (int i = 0; i < titles.length; i++) {
-            Recs.Pick p = new Recs.Pick();
-            p.id = 1000 + i;
-            p.kind = i % 2 == 0 ? "tv" : "movie";
-            p.title = titles[i];
-            p.meta = metas[i];
-            p.overview = about[i];
-            p.app = "streamly";
-            p.pkg = "io.freemytv.demo";
-            p.backdrop = "demo-" + i;
-            p.detailed = true;
-            Bitmap src = gradient(colors[i][0], colors[i][1], 1280, 720);
-            Backdrop art = Backdrop.make(src, true);
-            demoArt.put(p.backdrop, art);
-            Bitmap poster = gradient(colors[i][1], colors[i][0], 500, 750);
-            demoPoster.put(p.backdrop, new Recs.Poster(poster));
-            Recs.Pick show = new Recs.Pick();
-            show.id = 2000 + i;
-            show.kind = "tv";
-            show.title = p.title;
-            show.meta = p.meta;
-            show.overview = p.overview;
-            show.app = p.app;
-            show.pkg = p.pkg;
-            show.backdrop = p.backdrop;
-            show.detailed = true;
-            p.kind = "movie";
-            movies.add(p);
-            shows.add(show);
-            demoExplore.add(i % 2 == 0 ? show : p);
-        }
+        List<Recs.Pick> movies = demoPicks(new String[] {
+                "The Lantern Coast", "Northwind", "Glass Harbor", "Paper Saints", "Orchard Line",
+                "Silver Ridge", "Low Tide", "Copper Season", "Night Market", "The Last Ferry"}, 1000, "movie", colors, metas, about);
+        List<Recs.Pick> freshMovies = demoPicks(new String[] {
+                "Red Wharf", "Mile Zero", "Quiet Ledger", "Ash Court", "June Fire",
+                "Small Mercies", "The Blue Stamp", "Ward Six", "Open Water", "Late Light"}, 3000, "movie", colors, metas, about);
+        List<Recs.Pick> shows = demoPicks(new String[] {
+                "Tidewater Nights", "Velvet Static", "Room Nine", "Sunday Signal", "The Green Line",
+                "After Hours", "Little Comets", "Harbor Law", "Open Channel", "Second Sun"}, 2000, "tv", colors, metas, about);
+        List<Recs.Pick> freshShows = demoPicks(new String[] {
+                "Kite Season", "Northbound", "Hollow Pines", "Paper Radio", "Salt Road",
+                "The Night Desk", "Two Bridges", "Field Notes", "Warm Current", "Last Call"}, 4000, "tv", colors, metas, about);
+        for (int i = 0; i < 6; i++) demoExplore.add(i % 2 == 0 ? shows.get(i) : movies.get(i));
         List<Recs.Row> movieRows = new ArrayList<>();
         movieRows.add(new Recs.Row(Ui.tr("Top 10 Movies today"), movies, true));
-        movieRows.add(new Recs.Row(Ui.tr("New this week"), new ArrayList<>(movies)));
+        movieRows.add(new Recs.Row(Ui.tr("New this week"), freshMovies));
         demoRows.put("movie", movieRows);
         List<Recs.Row> showRows = new ArrayList<>();
         showRows.add(new Recs.Row(Ui.tr("Top 10 Shows today"), shows, true));
-        showRows.add(new Recs.Row(Ui.tr("New this week"), new ArrayList<>(shows)));
+        showRows.add(new Recs.Row(Ui.tr("New this week"), freshShows));
         demoRows.put("tv", showRows);
         String which = shot == null ? "movies" : shot;
         AppLog.w("demo home " + which);
@@ -3718,7 +3697,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             tab = 1;
         }
         zone = Z_CARDS;
-        cardIndex = which.contains("2") ? 1 : 0;
+        cardIndex = which.contains("end") ? 9 : which.contains("2") ? 1 : 0;
         rowIndex = which.contains("new") ? 1 : 0;
         List<HomeApps.Item> fake = new ArrayList<>();
         String[] apps = {"Streamly", "Tubeview", "Primo", "Galaxy+", "Maxi", "Orchard TV", "Tunes"};
@@ -3736,6 +3715,29 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         retarget(true);
         if (which.startsWith("trailer")) trailers.demo(cards.isEmpty() ? null : cards.get(cardIndex), !which.contains("rest"));
         heroDirty = statusDirty = true;
+    }
+
+    /** Ten sample titles, each with its own id, so a row shot is not the same list twice. */
+    private List<Recs.Pick> demoPicks(String[] titles, int idBase, String kind, int[][] colors, String[] metas, String[] about) {
+        List<Recs.Pick> out = new ArrayList<>();
+        for (int i = 0; i < titles.length; i++) {
+            Recs.Pick p = new Recs.Pick();
+            p.id = idBase + i;
+            p.kind = kind;
+            p.title = titles[i];
+            p.meta = metas[i % metas.length];
+            p.overview = about[i % about.length];
+            p.app = "streamly";
+            p.pkg = "io.freemytv.demo";
+            p.backdrop = "demo-" + kind + "-" + p.id;
+            p.detailed = true;
+            int c = i % colors.length;
+            Bitmap src = gradient(colors[c][0], colors[c][1], 1280, 720);
+            demoArt.put(p.backdrop, Backdrop.make(src, true));
+            demoPoster.put(p.backdrop, new Recs.Poster(gradient(colors[c][1], colors[c][0], 500, 750)));
+            out.add(p);
+        }
+        return out;
     }
 
     private static Bitmap gradient(int a, int b, int w, int h) {
