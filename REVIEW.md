@@ -27,37 +27,33 @@ This port keeps the behavior and drops the duplicates. Visual work is listed und
 
 ## Deep links
 
-Netflix on Android TV does not block title intents. It ignores a plain `ACTION_VIEW` aimed at the package while its process is already alive, and shows the home page instead. That is what the force-stop was papering over. Google TV’s own search opens the title page by starting Netflix’s TV activity on a fresh task.
+Tried on a TCL G10 (Google TV, Android 12). Nothing raised `SecurityException`. The plain https title URL with `-p` is what works. `FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TASK` (`-f 0x10008000`) is only for Netflix and Disney+. On Prime Video, Max and Hulu it sticks on the profile picker or the app’s home when the app is already open.
 
-The forms below are what this port sends. They still need a pass on the TCL G10; if a command below fails or opens the app’s home, the result wins over this write-up.
-
-| App | What it accepts |
-|---|---|
-| Netflix | `com.netflix.ninja.MainActivity`, `ACTION_VIEW`, `https://www.netflix.com/title/<id>` (not `/watch/`, which plays), category `LEANBACK_LAUNCHER`, extra `source` = `"30"` (a String), flags `FLAG_ACTIVITY_NEW_TASK \| FLAG_ACTIVITY_CLEAR_TASK` |
-| Prime Video | `ACTION_VIEW` on `com.amazon.amazonvideo.livingroom` (or `com.amazon.avod` / `com.amazon.firebat`), `https://app.primevideo.com/detail?gti=` or `?asin=` |
-| Disney+ | `ACTION_VIEW` on `com.disney.disneyplus`, `https://www.disneyplus.com/browse/entity-<id>` |
-| Max | `ACTION_VIEW` on `com.wbd.stream`, the title’s `https://play.max.com/...` address |
-| Hulu | `ACTION_VIEW` on `com.hulu.livingroomplus` (or `com.hulu.plus`), the title’s https address |
-| Apple TV | `ACTION_VIEW` on `com.apple.atve.androidtv.appletv` (Sony: `com.apple.atve.sony.appletv`), the title’s https address |
-| YouTube | `ACTION_VIEW` on `com.google.android.youtube.tv`, data `vnd.youtube:<id>` |
-
-Wikidata supplies the ids we can build those addresses from without Watchmode: Netflix `P1874`, Prime Video `P8055` (`gti`), Disney+ `P7595`, matched to TMDB `P4947` (movie) or `P4983` (TV). Watchmode remains the source for the other apps, and only when a title is opened.
-
-Commands to run on the TV (`adb connect` first). Replace the ids with a title that account actually has.
+| App | Cold | Warm | Form that worked |
+|---|---|---|---|
+| Netflix `com.netflix.ninja` | fresh start | starts fresh, playback began ~10 s later (the picture is blank under DRM, so the page itself was not seen) | `MainActivity`, `VIEW`, `https://www.netflix.com/title/<id>`, `LEANBACK_LAUNCHER`, extra `source` = `"30"`, `-f 0x10008000`. A plain VIEW only brought the existing screen forward. |
+| Disney+ `com.disney.disneyplus` | works | works; clear-task helps | `VIEW` + `BROWSABLE`, `https://www.disneyplus.com/browse/entity-<id>`, `-p`, and `-f 0x10008000` |
+| Prime Video `com.amazon.amazonvideo.livingroom` | works (profile picker, then the title) | works the same way | `VIEW` + `BROWSABLE`, `https://app.primevideo.com/detail?gti=<gti>`, `-p`. Clear-task sticks on the profile picker. |
+| Max `com.wbd.stream` | works | works | `VIEW` + `BROWSABLE`, `https://play.max.com/show/<id>` or `/movie/<id>`, `-p`. Clear-task fails when warm and drops to the profile picker. |
+| Hulu | works without clear-task | clear-task fails and lands on Hulu’s home | `VIEW` + `BROWSABLE`, the title’s https URL, `-p`. No clear-task. |
+| YouTube `com.google.android.youtube.tv` | `vnd.youtube:<id>` opens YouTube’s home | same | `VIEW`, `https://www.youtube.com/watch?v=<id>`, `-p`. That started the video. |
+| Apple TV `com.apple.atve.androidtv.appletv` | not tried | not tried | plain https URL, `-p`, no clear-task, until a device says otherwise |
 
 ```bash
 adb shell am start -a android.intent.action.VIEW -n com.netflix.ninja/.MainActivity \
   -d https://www.netflix.com/title/80057281 -c android.intent.category.LEANBACK_LAUNCHER \
   --es source 30 -f 0x10008000
 
-adb shell am start -a android.intent.action.VIEW -p com.amazon.amazonvideo.livingroom \
-  -c android.intent.category.BROWSABLE -d "https://app.primevideo.com/detail?gti=amzn1.dv.gti.0a9a9a9a-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-
 adb shell am start -a android.intent.action.VIEW -p com.disney.disneyplus \
-  -c android.intent.category.BROWSABLE -d "https://www.disneyplus.com/browse/entity-ENTITYID"
+  -c android.intent.category.BROWSABLE \
+  -d "https://www.disneyplus.com/browse/entity-ENTITYID" -f 0x10008000
+
+adb shell am start -a android.intent.action.VIEW -p com.amazon.amazonvideo.livingroom \
+  -c android.intent.category.BROWSABLE \
+  -d "https://app.primevideo.com/detail?gti=amzn1.dv.gti.0a9a9a9a-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
 adb shell am start -a android.intent.action.VIEW -p com.wbd.stream \
-  -c android.intent.category.BROWSABLE -d "https://play.max.com/movie/MOVIEID"
+  -c android.intent.category.BROWSABLE -d "https://play.max.com/show/SHOWID"
 
 adb shell am start -a android.intent.action.VIEW -p com.hulu.livingroomplus \
   -c android.intent.category.BROWSABLE -d "https://www.hulu.com/movie/MOVIEID"
@@ -66,10 +62,10 @@ adb shell am start -a android.intent.action.VIEW -p com.apple.atve.androidtv.app
   -c android.intent.category.BROWSABLE -d "https://tv.apple.com/movie/TITLE/umc.cmc.ID"
 
 adb shell am start -a android.intent.action.VIEW -p com.google.android.youtube.tv \
-  -d "vnd.youtube:dQw4w9WgXcQ"
+  -d "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 ```
 
-`0x10008000` is `FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TASK`.
+`0x10008000` is `FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_CLEAR_TASK`. Leave it off Prime Video, Max, Hulu, YouTube and Apple TV.
 
 ## What this port changes
 
