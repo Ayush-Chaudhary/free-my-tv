@@ -18,6 +18,8 @@ import android.widget.TextView;
 public class HomeActivity extends Activity {
     /** Opens All Apps (a remote's All Apps button, RemoteKeys). */
     static final String EXTRA_ALL_APPS = "io.freemytv.ALL_APPS";
+    /** Opens search (the key service, when Google TV could not load a title page). */
+    static final String EXTRA_SEARCH = "io.freemytv.SEARCH";
     private HomeView home;
     private int prefsVersion = Prefs.version;   // settings changed while we were away: start over
 
@@ -43,6 +45,15 @@ public class HomeActivity extends Activity {
         setContentView(home);
         getWindow().setBackgroundDrawable(null);
         if (getIntent().getBooleanExtra(EXTRA_ALL_APPS, false)) home.showAllApps();
+        openSearch(getIntent());
+    }
+
+    private void openSearch(Intent intent) {
+        if (intent == null || !intent.getBooleanExtra(EXTRA_SEARCH, false)) return;
+        intent.removeExtra(EXTRA_SEARCH);
+        startActivity(new Intent(this, SearchActivity.class)
+                .putExtra(SearchActivity.EXTRA_QUERY, intent.getStringExtra(SearchActivity.EXTRA_QUERY))
+                .putExtra(SearchActivity.EXTRA_NOTE, intent.getBooleanExtra(SearchActivity.EXTRA_NOTE, false)));
     }
 
     @Override protected void onResume() {
@@ -71,7 +82,8 @@ public class HomeActivity extends Activity {
         super.onNewIntent(intent);
         if (home == null) return;
         if (intent.getBooleanExtra(EXTRA_ALL_APPS, false)) home.showAllApps();
-        else home.reset(true);
+        else if (!intent.getBooleanExtra(EXTRA_SEARCH, false)) home.reset(true);
+        openSearch(intent);
     }
 
     @Override protected void onDestroy() {

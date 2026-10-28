@@ -59,6 +59,7 @@ ASSIST=false; [ "$(prop disable_assistant false)" = "true" ] && ASSIST=true
 CRYPTO=false; [ "$(prop show_crypto true)" = "true" ] && CRYPTO=true
 ANIMATION=false; [ "$(prop hide_animation false)" = "true" ] && ANIMATION=true
 SAVER=true; [ "$(prop screensaver true)" = "false" ] && SAVER=false
+KEEP_GOOGLE=false; [ "$(prop keep_google_home false)" = "true" ] && KEEP_GOOGLE=true
 
 rm -rf out && mkdir -p out/gen/io/freemytv out/classes
 cat > out/gen/io/freemytv/Config.java <<EOF
@@ -85,12 +86,22 @@ final class Config {
     static final boolean SHOW_CRYPTO = $CRYPTO;
     static final boolean HIDE_ANIMATION = $ANIMATION;
     static final boolean SCREENSAVER = $SAVER;   // false: the TV keeps its own
+    /** Leave Google TV's home installed. The switch only does this where the key service can run (see RemoteKeys). */
+    static final boolean KEEP_GOOGLE_HOME = $KEEP_GOOGLE;
     static final boolean GENERIC = $GENERIC;   // built with --generic, as the APK on GitHub's releases (Updates)
 }
 EOF
 
+# --- Resources. keep_google_home asks the key service to read the front window (Assistant's question, a failed
+# title page). Every other build keeps the service to key events only.
+rm -rf out/res && mkdir -p out && cp -a app/res out/res
+if $KEEP_GOOGLE; then
+  sed -i 's/canRequestFilterKeyEvents="true"/canRequestFilterKeyEvents="true" android:canRetrieveWindowContent="true"/' \
+    out/res/xml/remote_key_service.xml
+fi
+
 # --- Build
-"$BT/aapt2" compile --dir app/res -o out/res.zip
+"$BT/aapt2" compile --dir out/res -o out/res.zip
 # Fonts uncompressed: Android reads them straight from the APK.
 "$BT/aapt2" link -o out/base.apk -I "$AJ" --manifest app/AndroidManifest.xml --java out/gen out/res.zip \
   --min-sdk-version 26 --target-sdk-version 33 -A app/assets -0 ttf

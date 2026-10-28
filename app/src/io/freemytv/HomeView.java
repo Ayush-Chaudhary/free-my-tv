@@ -108,6 +108,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final Scene scene = new Scene();
     private final HomeData data;
     private final Recs recs;
+    private final TrailerPlayer trailers;
     private final NowPlaying.Watch playing;
     private final Click click;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -150,6 +151,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     private final Spring[] cardOpen = new Spring[Recs.MAX_CARDS];
     /** Picks per tab (Prefs.cards()), read when the cards update, not on every frame. */
     private int cardSlots = 3;
+    /** Movies and Shows: which row is on the cards (Top 10, new, a genre). Explore has none. */
+    private int rowIndex;
+    private List<Recs.Row> tabRows = new ArrayList<>();
     /** The row scrolls in whole cards: the focused one stays among the first three. */
     private final Spring cardScroll = new Spring(0.32f, 0.78f, 0);
     private final RectF[] cardRects = new RectF[Recs.MAX_CARDS];
@@ -376,6 +380,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         activity = a;
         data = HomeData.get(a);
         recs = Recs.get(a);
+        trailers = new TrailerPlayer(this);
         playing = new NowPlaying.Watch(a, this::onPlaying);
         click = new Click(a);
         shelfVisible = HomeApps.shelfVisible(a);
@@ -482,6 +487,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         handler.removeCallbacks(reloadSoon);
         handler.removeCallbacks(bars);
         playing.stop();
+        trailers.onFocus(null);
         data.removeListener(this);
         recs.removeListener(this);
         if (tvInputs != null) tvInputs.unregisterCallback(inputCallback);
@@ -593,6 +599,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         sheetLayer.setPivotX(width / 2f);
         sheetLayer.setPivotY(height / 2f);
         place(toastLayer, (width - toastLayer.getMeasuredWidth()) / 2, 0);
+        trailers.layout();
     }
 
     private static void place(View v, int x, int y) {
@@ -1971,6 +1978,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         heroDirty |= snap || heroChanged;
         drawerDirty |= snap || drawerChanged;
         spoken.focusMoved();
+        trailers.onFocus(zone == Z_CARDS && !sheetOpen && cardIndex < cards.size() ? cards.get(cardIndex) : null);
     }
 
     /** Aims a group's springs (only `focused` at 1); returns true if any target changed. */
@@ -2311,6 +2319,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     }
 
     private void back() {
+        if (trailers.onBack()) return;
         if (sheetOpen) {
             closeSheet();
         } else if (zone == Z_DRAWER || zone == WIDGETS) {
@@ -2459,8 +2468,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         } else if (zone == Z_HERO) {
             Recs.Pick p = currentPick();
             if (p == null || p.pkg == null) return;
-            it = HomeApps.app(p.pkg, Recs.serviceName(p), p.link);
-            r = heroButton;
+            openPick(p, heroButton);
+            return;
         } else if (zone == Z_STATUS) {
             if (statusItems.isEmpty()) return;
             it = statusItems.get(statusIndex);
@@ -2479,8 +2488,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         } else if (zone == Z_CARDS) {
             Recs.Pick p = cardIndex < cards.size() ? cards.get(cardIndex) : null;
             if (p == null || p.pkg == null) return;
-            it = HomeApps.app(p.pkg, Recs.serviceName(p), p.link);
-            r = cardRects[cardIndex];
+            openPick(p, cardRects[cardIndex]);
+            return;
         } else {
             if (shelf.isEmpty()) return;
             it = shelf.get(shelfIndex);
@@ -2505,6 +2514,42 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         boolean opened = HomeApps.open(activity, it, this, Math.round(r.left), Math.round(r.top),
                 Math.round(r.width()), Math.round(r.height()));
         if (!opened) showToast(Ui.trf("Couldn't open {app}.", "app", it.label));
+    }
+
+    /** The title's page when we have one (looked up on OK if it isn't yet), otherwise the app's home. */
+    private void openPick(Recs.Pick p, RectF r) {
+        click.open();
+        LOADER.execute(() -> {
+            if (p.link == null) recs.ensureLink(p);
+            handler.post(() -> {
+                if (!running) return;
+                HomeApps.Item it = HomeApps.app(p.pkg, Recs.serviceName(p), p.link);
+                boolean opened = HomeApps.open(activity, it, this, Math.round(r.left), Math.round(r.top),
+                        Math.round(r.width()), Math.round(r.height()));
+                if (!opened) showToast(Ui.trf("Couldn't open {app}.", "app", it.label));
+            });
+        });
+    }
+
+    boolean homeRunning() { return running; }
+
+    Recs.Pick trailerPick() {
+        if (!running || sheetOpen || zone != Z_CARDS || cardIndex >= cards.size()) return null;
+        return cards.get(cardIndex);
+    }
+
+    RectF focusedCardRect() {
+        return cardRects[Math.max(0, Math.min(cardIndex, cardRects.length - 1))];
+    }
+
+    float uiScale() { return k; }
+
+    int screenPx() { return w; }
+
+    /** Above the shelf, under the toast: the trailer window. */
+    int layerAboveTiles() {
+        int at = indexOfChild(tiles);
+        return at < 0 ? getChildCount() : at + 1;
     }
 
     // MARK: - Holding OK: All Apps puts the app on the shelf or takes it off; on the shelf, the app is lifted to move
@@ -3017,7 +3062,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     /** The three cards of the current tab (Explore, Movies, Shows) and the background taken from the first one. */
     private void updateCards() {
         cardSlots = Prefs.cards();
-        List<Recs.Pick> list = recs.now(TAB_KIND[tab]);
+        List<Recs.Pick> list = cardsForTab();
         if (!samePicks(list, cards)) {
             cards = list;
             cardIndex = Math.min(cardIndex, Math.max(0, list.size() - 1));
@@ -3045,9 +3090,39 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         if (running) updatePicks();
     };
 
+    /** Explore uses the hourly mix. Movies and Shows use the row on screen (Top 10, new, then genres). */
+    private List<Recs.Pick> cardsForTab() {
+        String kind = TAB_KIND[tab];
+        if (kind == null) {
+            tabRows = new ArrayList<>();
+            rowIndex = 0;
+            return recs.now(null);
+        }
+        tabRows = recs.rows(kind);
+        if (tabRows.isEmpty()) return recs.now(kind);
+        if (rowIndex >= tabRows.size()) rowIndex = 0;
+        recs.setActive(kind, rowIndex);
+        List<Recs.Pick> row = tabRows.get(rowIndex).picks;
+        int n = Prefs.cards();
+        return row.size() > n ? new ArrayList<>(row.subList(0, n)) : row;
+    }
+
+    /** The next or previous row of Movies or Shows. False at either end, so up and down leave the cards. */
+    private boolean changeRow(int dir) {
+        if (tabRows.size() < 2) return false;
+        int next = rowIndex + dir;
+        if (next < 0 || next >= tabRows.size()) return false;
+        rowIndex = next;
+        cardIndex = 0;
+        cards = new ArrayList<>();
+        updateCards();
+        return true;
+    }
+
     private void selectTab(int index) {
         if (index == tab) return;
         tab = index;
+        rowIndex = 0;
         updateCards();
         heroDirty = true;
     }
@@ -3123,6 +3198,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             Paint p = i == tab ? lTabOn : lTab;
             if (i == tab) lTabOn.setColor(blend(tone(L_INK, WHITE), L_INK, focus));   // always dark on the white pill
             c.drawText(tabs()[i], r.centerX() - p.measureText(tabs()[i]) / 2, r.centerY() + Ui.halfCap(p), p);
+        }
+        if (tab > 0 && rowIndex < tabRows.size()) {
+            String name = tabRows.get(rowIndex).title;
+            float x = topRects[2].right + 28 * k;
+            c.drawText(name, x, topRects[2].centerY() + Ui.halfCap(lTab), lTab);
         }
         layoutCards();
         int top = -1;
@@ -3295,9 +3375,11 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     if (next == cardIndex) return true;
                     cardIndex = next;
                 } else if (dy < 0) {
-                    zone = Z_TOP;
-                    topIndex = tab;     // as on Apple TV: moving up to the tabs focuses the selected tab
-                } else {
+                    if (!changeRow(-1)) {
+                        zone = Z_TOP;
+                        topIndex = tab;     // as on Apple TV: moving up to the tabs focuses the selected tab
+                    }
+                } else if (!changeRow(1)) {
                     zone = Z_SHELF;
                     if (!shelf.isEmpty()) shelfIndex = nearest(tileRects, tileRects.length, cardRects[cardIndex].centerX());
                 }
