@@ -812,7 +812,9 @@ final class HomeMode {
         List<String> out = new ArrayList<>();
         String homePkg = home.contains("FallbackHome") ? null : packageOf(home);
         if (setupHome) out.add(GOOGLE_SETUP);
-        if (homePkg != null && !homePkg.equals(PKG)) out.add(homePkg);
+        // keep_google_home leaves Google TV's home on, and only where the key service can take Home back (RemoteKeys).
+        boolean keepGoogle = RemoteKeys.keepGoogleHome() && "com.google.android.apps.tv.launcherx".equals(homePkg);
+        if (homePkg != null && !homePkg.equals(PKG) && !keepGoogle) out.add(homePkg);
         if (TV_LAUNCHER.equals(homePkg)) out.add(TV_RECOMMENDATIONS);
         String dreamPkg = packageOf(dream);
         // screensaver=false keeps the TV's own screensaver: then it stays on.

@@ -23,6 +23,8 @@ final class Prefs {
 
     /** Remote keys we handle, with the app each opens until the user picks another. Codes read from the TCL's log. */
     static final int KEY_NETFLIX = 4062, KEY_YOUTUBE = 190, KEY_PRIME = 4099, KEY_TCL_CHANNEL = 4020;
+    /** TCL's Apple TV button (G10 and other remotes): key code 4160, read from the TV's log. */
+    static final int KEY_TCL_APPLE = 4160;
     /** The Netflix button on Vestel TVs and Formovie projectors: STEM_1, which the TV hands to its Netflix key receiver (dumpsys window policy). */
     static final int KEY_STEM_NETFLIX = KeyEvent.KEYCODE_STEM_1;
     /** KTC's (NextStar) Tabii button: BUTTON_8, which the TV hands to its hot-key receiver (its log: "keycode = 195"). */
@@ -61,7 +63,7 @@ final class Prefs {
             : RemoteKeys.KTC ? new int[] {KEY_KTC_TABII}
             : RemoteKeys.XIAOMI ? new int[] {KEY_MI, KEY_YOUTUBE, KEY_XIAOMI_PATCHWALL, KEY_XIAOMI_OKKO, KEY_XIAOMI_VK,
                     KEY_XIAOMI_RUTUBE, KEY_XIAOMI_KION, KEY_XIAOMI_WINK, KEY_XIAOMI_IVI}
-            : new int[] {KEY_NETFLIX, KEY_YOUTUBE, KEY_PRIME, KEY_TCL_CHANNEL};
+            : new int[] {KEY_NETFLIX, KEY_YOUTUBE, KEY_PRIME, KEY_TCL_CHANNEL, KEY_TCL_APPLE};
 
     /** Bumped by every change: screens compare it to know when to redraw. */
     static volatile int version;
@@ -216,6 +218,12 @@ final class Prefs {
     }
 
     static boolean quotes() { return sp().getBoolean("quotes", Config.SHOW_CRYPTO); }
+
+    /**
+     * Leave Google TV's home app installed (config keep_google_home). The switch ignores this on a TV where the key
+     * service cannot run: otherwise Home would stay on Google's screen with nothing to take it back.
+     */
+    static boolean keepGoogleHome() { return sp().getBoolean("keepGoogleHome", Config.KEEP_GOOGLE_HOME); }
     static void setQuotes(boolean on) { put("quotes", on); }
 
     /** Your photos (Photos, sent from a computer) on the screensaver and behind the home screen, once imported. */
@@ -316,6 +324,7 @@ final class Prefs {
             case KEY_YOUTUBE: return "com.google.android.youtube.tv";
             case KEY_PRIME: return "com.amazon.amazonvideo.livingroom";
             case KEY_TCL_CHANNEL: return "";
+            case KEY_TCL_APPLE: return "com.apple.atve.androidtv.appletv";
             case KEY_MI: return HomeMode.PKG;   // our home screen: the remote has no other Home button
             default: return "";
         }

@@ -50,10 +50,21 @@ final class Recs {
     static final class Pick {
         int id;
         String kind;            // "movie" or "tv"
-        String title, backdrop, poster, meta = "", app, pkg;   // poster: the portrait image of the narrow cards
-        String link;            // opens the title in its app (looked up with Watchmode), or null: the app's home
+        String title, backdrop, poster, meta = "", overview = "", app, pkg;   // poster: the portrait image of the narrow cards
+        String link;            // opens the title in its app (looked up with Watchmode or Wikidata), or null: the app's home
         boolean detailed;
         java.io.File photo;     // one of your own photos (Photos): no title, no caption
+    }
+
+    /** One horizontal row on Movies or Shows (Top 10, new, or a genre). Picks are shared with the hourly pool when they match. */
+    static final class Row {
+        final String title;
+        final List<Pick> picks;
+
+        Row(String title, List<Pick> picks) {
+            this.title = title;
+            this.picks = picks;
+        }
     }
 
     interface Listener { void onRecs(); }
@@ -70,7 +81,15 @@ final class Recs {
     private static final int ANIMATION = 16;
     private static final long LIST_EVERY = 6 * 3600_000L;
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 5;
+    private static final int CACHE_VERSION = 6;
+    /** Genres that get their own row, in order. Movies: Action, Comedy, Drama, Thriller, Horror, Science Fiction, Romance, Animation. */
+    private static final int[] MOVIE_GENRES = {28, 35, 18, 53, 27, 878, 10749, 16};
+    /** Shows: Action & Adventure, Comedy, Drama, Crime, Sci-Fi & Fantasy, Mystery, Animation, Reality. */
+    private static final int[] TV_GENRES = {10759, 35, 18, 80, 10765, 9648, 16, 10764};
+    /** A row keeps a few more titles than it shows: some turn out not to be on an app once their details arrive. */
+    private static final int ROW_EXTRA = 4;
+    /** Watchmode's free plan is 2,500 requests a month. Stop short of it; two requests look up one title. */
+    private static final int WATCHMODE_CAP = 2000;
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     /** Service name on TMDB (part of the name, lowercase) → TV app (HomeApps key, package). */
     private static final String[][] SERVICES = {
@@ -167,6 +186,8 @@ final class Recs {
 
     private final Context context;
     private final SharedPreferences cache;
+    /** Title links, apart from the pick list: a search result is not wiped when the rows are saved again. */
+    private final SharedPreferences links;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final List<Listener> listeners = new ArrayList<>();
@@ -174,6 +195,11 @@ final class Recs {
     private final Map<String, Backdrop> images = new LinkedHashMap<>(16, 0.75f, true);   // this hour's, built and ready to draw
     private final java.util.Set<String> pending = new java.util.HashSet<>();
     private volatile List<Pick> picks = new ArrayList<>();
+    private volatile List<List<Row>> rows = new ArrayList<>();   // 0 movies, 1 shows
+    private volatile int activeTab, activeRow;                   // the row on screen, so its details come first
+    private final Map<String, List<Pick>> searchCache = new LinkedHashMap<String, List<Pick>>(24, 0.75f, true) {
+        @Override protected boolean removeEldestEntry(Map.Entry<String, List<Pick>> e) { return size() > 20; }
+    };
     private volatile int period = -1;
     private volatile long listAt;
     private volatile boolean fetching;
@@ -185,10 +211,13 @@ final class Recs {
     private Recs(Context c) {
         context = c;
         cache = c.getSharedPreferences("recs", Context.MODE_PRIVATE);
+        links = c.getSharedPreferences("links", Context.MODE_PRIVATE);
         if (cache.getInt("version", 0) != CACHE_VERSION) cache.edit().clear().putInt("version", CACHE_VERSION).apply();
         try {
             String saved = cache.getString("picks", null);
             if (saved != null) picks = parse(new JSONArray(saved));
+            String savedRows = cache.getString("rows", null);
+            if (savedRows != null) rows = parseRows(new JSONArray(savedRows));
             period = cache.getInt("period", -1);
             listAt = cache.getLong("listAt", 0);
             listLanguage = cache.getString("language", cache.getBoolean("english", false) ? "en" : "pt");
@@ -341,6 +370,98 @@ final class Recs {
         return p == null || p.app == null ? "" : SERVICE_NAME.get(p.app);
     }
 
+    /**
+     * Movies or shows ("movie" / "tv"): each row, up to the home screen's card count, whose app is on the TV
+     * (a title not looked up yet stays, so the row isn't empty while its details arrive).
+     */
+    List<Row> rows(String kind) {
+        List<Row> out = new ArrayList<>();
+        int which = "movie".equals(kind) ? 0 : "tv".equals(kind) ? 1 : -1;
+        List<List<Row>> all = rows;
+        if (!hasKey(context) || which < 0 || which >= all.size()) return out;
+        int n = Prefs.cards();
+        Map<String, Boolean> have = new HashMap<>();
+        for (Row r : all.get(which)) {
+            List<Pick> list = new ArrayList<>();
+            for (Pick p : r.picks) {
+                if (list.size() >= n) break;
+                if (!p.detailed || (p.pkg != null && have.computeIfAbsent(p.pkg, this::installed))) list.add(p);
+            }
+            if (!list.isEmpty()) out.add(new Row(r.title, list));
+        }
+        return out;
+    }
+
+    /** The row on screen. Its titles, and the next row's, are fetched ahead of the others. */
+    void setActive(String kind, int row) {
+        int tab = "tv".equals(kind) ? 1 : 0;
+        if (tab == activeTab && row == activeRow) return;
+        activeTab = tab;
+        activeRow = row;
+        refreshIfStale();
+    }
+
+    /**
+     * Movies and shows matching a search, without their details (one TMDB request). The same query is remembered for
+     * this session. Blocking: call it off the main thread.
+     */
+    List<Pick> searchHits(String query) throws Exception {
+        String q = query == null ? "" : query.trim();
+        if (q.length() < 2) return new ArrayList<>();
+        String cacheKey = lang() + "|" + REGION + "|" + q.toLowerCase(Locale.ROOT);
+        synchronized (searchCache) {
+            List<Pick> hit = searchCache.get(cacheKey);
+            if (hit != null) return hit;
+        }
+        JSONArray found = get("/search/multi?include_adult=false&language=" + lang() + "&query="
+                + URLEncoder.encode(q, "UTF-8")).getJSONArray("results");
+        List<Pick> out = new ArrayList<>();
+        for (int i = 0; i < found.length() && out.size() < 8; i++) {
+            JSONObject o = found.optJSONObject(i);
+            if (o == null) continue;
+            String kind = o.optString("media_type");
+            if (!kind.equals("movie") && !kind.equals("tv")) continue;
+            List<Pick> one = new ArrayList<>();
+            add(one, o, kind);
+            if (!one.isEmpty()) out.add(one.get(0));
+        }
+        synchronized (searchCache) { searchCache.put(cacheKey, out); }
+        return out;
+    }
+
+    /** Which app has this title, if it isn't known yet. Blocking. Does not spend a Watchmode or Wikidata lookup. */
+    void fillService(Pick p) throws Exception {
+        if (p == null || p.detailed || p.id <= 0) return;
+        fetchDetails(p);
+    }
+
+    /** The title's own page, from the link remembered earlier or one lookup. Blocking. */
+    void ensureLink(Pick p) {
+        findLink(p);
+    }
+
+    /** A title's wide photo for search (backdrop, or the poster when the wide one is missing). */
+    static String smallImage(Pick p) {
+        if (p == null) return "";
+        String path = imagePath(p.backdrop);
+        if (path.isEmpty()) path = imagePath(p.poster);
+        return path.isEmpty() ? "" : "https://image.tmdb.org/t/p/w780" + path;
+    }
+
+    /** The portrait, when the wide photo failed to load. */
+    static String posterImage(Pick p) {
+        if (p == null) return "";
+        String path = imagePath(p.poster);
+        return path.isEmpty() ? "" : "https://image.tmdb.org/t/p/w500" + path;
+    }
+
+    private static String imagePath(String path) {
+        if (path == null) return "";
+        path = path.trim();
+        if (path.isEmpty() || "null".equals(path)) return "";
+        return path.charAt(0) == '/' ? path : "/" + path;
+    }
+
     /** The pick's ready backdrop (or null: builds it in the background and notifies when it's ready). */
     Backdrop backdrop(Pick p) {
         if (p == null || p.backdrop == null) return null;
@@ -399,7 +520,6 @@ final class Recs {
                         failures++;
                         last = e.getMessage() == null ? e.toString() : e.getMessage();
                     }
-                    findLink(pick);
                 }
                 save();
                 if (tried > 0 && failures == tried) throw new IOException(last);
@@ -495,7 +615,18 @@ final class Recs {
         for (String kind : new String[] {null, "movie", "tv"}) {
             for (Pick p : now(kind)) if (seen.add(key(p))) out.add(p);
         }
+        // The row on screen, the one under it, and the other tab's first row. Genre rows wait until they're reached.
+        addRow(out, seen, activeTab, activeRow);
+        addRow(out, seen, activeTab, activeRow + 1);
+        addRow(out, seen, 1 - activeTab, 0);
         return out;
+    }
+
+    private void addRow(List<Pick> out, java.util.Set<String> seen, int tab, int row) {
+        if (tab < 0 || tab >= rows.size()) return;
+        List<Row> tabRows = rows.get(tab);
+        if (row < 0 || row >= tabRows.size()) return;
+        for (Pick p : tabRows.get(row).picks) if (seen.add(key(p))) out.add(p);
     }
 
     /** Movies and shows are numbered separately on TMDB: a pick is identified by type + number. */
@@ -571,7 +702,9 @@ final class Recs {
         java.util.Set<String> seen = new java.util.HashSet<>();
         alternate(list, seen, hotMovies, hotShows, 24);
         alternate(list, seen, newMovies, newShows, 24);
-        if (list.isEmpty()) throw new IOException("TMDB returned no recommendations");
+        List<List<Row>> built = buildRows(hotMovies, hotShows, newMovies, newShows, common, list);
+        if (list.isEmpty() && built.get(0).isEmpty() && built.get(1).isEmpty()) throw new IOException("TMDB returned no recommendations");
+        rows = built;
         picks = list;
         period = p;
         listAt = System.currentTimeMillis();
@@ -626,6 +759,97 @@ final class Recs {
         }
     }
 
+    /** Top 10, what's new, then a row per genre. Titles already in the hourly pool are the same objects. */
+    private List<List<Row>> buildRows(List<Pick> hotMovies, List<Pick> hotShows, List<Pick> newMovies, List<Pick> newShows,
+            String common, List<Pick> pool) {
+        Map<String, Pick> all = new LinkedHashMap<>();
+        for (Pick p : pool) all.put(key(p), p);
+        for (Pick p : hotMovies) all.putIfAbsent(key(p), p);
+        for (Pick p : hotShows) all.putIfAbsent(key(p), p);
+        for (Pick p : newMovies) all.putIfAbsent(key(p), p);
+        for (Pick p : newShows) all.putIfAbsent(key(p), p);
+        List<List<Row>> built = new ArrayList<>();
+        for (String kind : new String[] {"movie", "tv"}) {
+            boolean movie = kind.equals("movie");
+            List<Row> tabRows = new ArrayList<>();
+            List<Pick> top = new ArrayList<>();
+            take(top, all, movie ? hotMovies : hotShows);
+            if (top.size() < MAX_CARDS) discoverInto(top, all, kind, "&vote_count.gte=" + (movie ? 200 : 100), common);
+            if (!top.isEmpty()) tabRows.add(new Row(movie ? Ui.tr("Top 10 Movies") : Ui.tr("Top 10 Shows"), top));
+            List<Pick> fresh = new ArrayList<>();
+            take(fresh, all, movie ? newMovies : newShows);
+            if (fresh.isEmpty()) {
+                discoverInto(fresh, all, kind, movie
+                        ? "&vote_count.gte=30&primary_release_date.gte=" + day(-365) + "&primary_release_date.lte=" + day(0)
+                        : "&vote_count.gte=20&air_date.gte=" + day(-90) + "&air_date.lte=" + day(0), common);
+            }
+            if (!fresh.isEmpty()) tabRows.add(new Row(Ui.tr("New on your apps"), fresh));
+            Map<Integer, String> names;
+            try {
+                names = genreNames(kind);
+            } catch (Exception e) {
+                AppLog.w("recommendations: genres: " + e.getMessage());
+                names = new HashMap<>();
+            }
+            for (int g : movie ? MOVIE_GENRES : TV_GENRES) {
+                if (Config.HIDE_ANIMATION && g == ANIMATION) continue;
+                String name = names.get(g);
+                if (name == null) continue;
+                List<Pick> genreRow = new ArrayList<>();
+                discoverInto(genreRow, all, kind, "&vote_count.gte=" + (movie ? 80 : 40) + "&with_genres=" + g, common);
+                if (!genreRow.isEmpty()) tabRows.add(new Row(genre(name), genreRow));
+            }
+            built.add(tabRows);
+        }
+        return built;
+    }
+
+    private static void take(List<Pick> row, Map<String, Pick> all, List<Pick> from) {
+        for (Pick p : from) {
+            if (row.size() >= MAX_CARDS + ROW_EXTRA) return;
+            Pick known = all.get(key(p));
+            row.add(known == null ? p : known);
+        }
+    }
+
+    private void discoverInto(List<Pick> row, Map<String, Pick> all, String kind, String filters, String common) {
+        try {
+            fill(row, all, get("/discover/" + kind + "?page=1" + filters + common).getJSONArray("results"), kind);
+        } catch (Exception e) {
+            AppLog.w("recommendations: " + kind + " row: " + e.getMessage());
+        }
+    }
+
+    /** Adds results to a row, reusing a title that already exists so its details are fetched once. */
+    private static void fill(List<Pick> row, Map<String, Pick> all, JSONArray results, String kind) {
+        java.util.Set<String> inRow = new java.util.HashSet<>();
+        for (Pick p : row) inRow.add(key(p));
+        for (int i = 0; results != null && i < results.length() && row.size() < MAX_CARDS + ROW_EXTRA; i++) {
+            JSONObject o = results.optJSONObject(i);
+            if (o == null) continue;
+            String k = kind + ":" + o.optInt("id");
+            Pick p = all.get(k);
+            if (p == null) {
+                List<Pick> one = new ArrayList<>();
+                add(one, o, kind);
+                if (one.isEmpty()) continue;
+                p = one.get(0);
+                all.put(k, p);
+            }
+            if (inRow.add(k)) row.add(p);
+        }
+    }
+
+    private Map<Integer, String> genreNames(String kind) throws Exception {
+        Map<Integer, String> out = new HashMap<>();
+        JSONArray list = get("/genre/" + kind + "/list?language=" + lang()).getJSONArray("genres");
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject o = list.optJSONObject(i);
+            if (o != null) out.put(o.getInt("id"), o.optString("name"));
+        }
+        return out;
+    }
+
     /** The date `offset` days from today, as "2026-10-19" (negative = in the past). */
     private static String day(int offset) {
         Calendar cal = Calendar.getInstance();
@@ -643,6 +867,7 @@ final class Recs {
         p.title = o.optString(kind.equals("movie") ? "title" : "name");
         p.backdrop = backdrop;
         p.poster = o.isNull("poster_path") ? "" : o.optString("poster_path");
+        p.overview = o.optString("overview").trim();
         list.add(p);
     }
 
@@ -691,6 +916,8 @@ final class Recs {
         }
         if (p.app != null) parts.add(SERVICE_NAME.get(p.app));
         p.meta = String.join(" · ", parts);
+        String about = o.optString("overview").trim();
+        if (!about.isEmpty()) p.overview = about;
         p.detailed = true;
     }
 
@@ -796,9 +1023,9 @@ final class Recs {
         return "wm2:" + p.kind + p.id + p.app;   // wm2: links found before the channel check are looked up again
     }
 
+    /** Links are looked up when a title is opened, not while the rows load: the free plan is 2,500 requests a month. */
     private boolean needsLink(Pick p) {
-        return linksOn() && p.id > 0 && p.pkg != null && p.link == null
-                && cache.getString(linkKey(p), null) == null && System.currentTimeMillis() >= linkRetryAt;
+        return false;
     }
 
     /** A key is set and Watchmode hasn't refused it (a refused key isn't tried again until it changes). */
@@ -807,43 +1034,123 @@ final class Recs {
         return !key.isEmpty() && cache.getInt("wm:refused", 0) != key.hashCode();
     }
 
-    /** Sets p.link from what was looked up before, or looks it up (2 requests of the free plan's 2,500 a month). */
+    /**
+     * Sets p.link from a link remembered earlier, Watchmode (2 requests, under the monthly cap), or Wikidata
+     * (Netflix, Prime Video, Disney+). An empty string means "looked up, nothing": the app's home is used.
+     */
     private void findLink(Pick p) {
-        if (!linksOn() || p.id < 0 || p.pkg == null || p.link != null) return;
-        String saved = cache.getString(linkKey(p), null);
+        if (p.id <= 0 || p.pkg == null || p.link != null) return;
+        String saved = links.getString(linkKey(p), null);
         if (saved != null) {
             p.link = saved.isEmpty() ? null : saved;
             return;
         }
         if (System.currentTimeMillis() < linkRetryAt) return;
+        String link = "";
         try {
-            String link = "";
-            JSONArray found = new JSONObject(watchmode("/search/?search_field=tmdb_" + p.kind + "_id&search_value=" + p.id))
-                    .optJSONArray("title_results");
-            if (found != null && found.length() > 0) {
-                JSONArray sources = new JSONArray(watchmode("/title/" + found.getJSONObject(0).getInt("id") + "/sources/?regions=" + REGION));
-                String[] service = null;
-                for (String[] s : SERVICES) if (s[1].equals(p.app)) service = s;
-                for (int i = 0; service != null && i < sources.length() && link.isEmpty(); i++) {
-                    JSONObject s = sources.getJSONObject(i);
-                    String name = s.optString("name").toLowerCase(Locale.ROOT).replace(" ", "");
-                    String want = service[0].replace(" ", "");
-                    // Not a channel sold inside another app ("AppleTV+ Amazon Channel", "Paramount+ (Via Amazon Prime)"):
-                    // that link opens Amazon or Apple's app, not the one the pick is for.
-                    boolean resold = name.contains("channel") || name.contains("(via");
-                    boolean same = !resold && (want.equals("max") || WHOLE_NAME.contains(want) ? name.equals(want) : name.contains(want));
-                    if (same && s.optString("type").equals("sub") && s.optString("web_url").startsWith("https://")) link = s.optString("web_url");
-                }
-            }
-            cache.edit().putString(linkKey(p), link).apply();
-            p.link = link.isEmpty() ? null : link;
+            if (linksOn() && watchmodeRoom()) link = watchmodeLink(p);
         } catch (Exception e) {
             if ("Watchmode returned HTTP 401".equals(e.getMessage())) {
                 cache.edit().putInt("wm:refused", Config.WATCHMODE_KEY.trim().hashCode()).apply();
             }
-            linkRetryAt = System.currentTimeMillis() + 10 * 60_000L;   // quota or network: not again right away
+            linkRetryAt = System.currentTimeMillis() + 10 * 60_000L;
             AppLog.w("watchmode: " + e.getMessage());
+            return;   // don't cache a miss caused by the network or the quota
         }
+        if (link.isEmpty()) {
+            try { link = wikidataLink(p); }
+            catch (Exception e) { AppLog.w("wikidata: " + e.getMessage()); return; }
+        }
+        links.edit().putString(linkKey(p), link).apply();
+        p.link = link.isEmpty() ? null : link;
+    }
+
+    /** Two requests per title; stop at 2,000 of the free plan's 2,500 in a calendar month. */
+    private boolean watchmodeRoom() {
+        String month = String.format(Locale.US, "%d-%02d", Calendar.getInstance().get(Calendar.YEAR),
+                Calendar.getInstance().get(Calendar.MONTH) + 1);
+        if (!month.equals(links.getString("wm:month", ""))) {
+            links.edit().putString("wm:month", month).putInt("wm:count", 0).apply();
+        }
+        return links.getInt("wm:count", 0) + 2 <= WATCHMODE_CAP;
+    }
+
+    private String watchmodeLink(Pick p) throws Exception {
+        JSONArray found = new JSONObject(watchmode("/search/?search_field=tmdb_" + p.kind + "_id&search_value=" + p.id))
+                .optJSONArray("title_results");
+        String link = "";
+        if (found != null && found.length() > 0) {
+            JSONArray sources = new JSONArray(watchmode("/title/" + found.getJSONObject(0).getInt("id") + "/sources/?regions=" + REGION));
+            String[] service = null;
+            for (String[] s : SERVICES) if (s[1].equals(p.app)) service = s;
+            for (int i = 0; service != null && i < sources.length() && link.isEmpty(); i++) {
+                JSONObject s = sources.getJSONObject(i);
+                String name = s.optString("name").toLowerCase(Locale.ROOT).replace(" ", "");
+                String want = service[0].replace(" ", "");
+                boolean resold = name.contains("channel") || name.contains("(via");
+                boolean same = !resold && (want.equals("max") || WHOLE_NAME.contains(want) ? name.equals(want) : name.contains(want));
+                if (same && s.optString("type").equals("sub") && s.optString("web_url").startsWith("https://")) link = s.optString("web_url");
+            }
+        }
+        links.edit().putInt("wm:count", links.getInt("wm:count", 0) + 2).apply();
+        return link;
+    }
+
+    /**
+     * Wikidata's Netflix, Prime Video and Disney+ id for this TMDB title, as the https address those apps open.
+     * One SPARQL request, no key. Empty when Wikidata has no id.
+     */
+    private static String wikidataLink(Pick p) throws Exception {
+        String property = "netflix".equals(p.app) ? "P1874" : "prime".equals(p.app) ? "P8055" : "disney".equals(p.app) ? "P7595" : "";
+        if (property.isEmpty()) return "";
+        String tmdb = p.kind.equals("tv") ? "P4983" : "P4947";
+        String query = "SELECT ?id WHERE { ?item wdt:" + tmdb + " \"" + p.id + "\" . ?item wdt:" + property + " ?id } LIMIT 1";
+        HttpURLConnection c = (HttpURLConnection) new URL("https://query.wikidata.org/sparql?format=json&query="
+                + URLEncoder.encode(query, "UTF-8")).openConnection();
+        c.setConnectTimeout(8000);
+        c.setReadTimeout(10000);
+        c.setRequestProperty("Accept", "application/sparql-results+json");
+        c.setRequestProperty("User-Agent", "FreeMyTV/1.0 (https://freemytv.io)");
+        String id;
+        try {
+            if (c.getResponseCode() != 200) return "";
+            JSONArray bindings = new JSONObject(read(c.getInputStream())).getJSONObject("results").getJSONArray("bindings");
+            if (bindings.length() == 0) return "";
+            id = bindings.getJSONObject(0).getJSONObject("id").optString("value");
+        } finally {
+            c.disconnect();
+        }
+        if (id.isEmpty() || id.indexOf('/') >= 0 || id.indexOf('?') >= 0) return "";
+        if ("netflix".equals(p.app)) return "https://www.netflix.com/title/" + id;
+        if ("prime".equals(p.app)) return "https://app.primevideo.com/detail?gti=" + id;
+        return "https://www.disneyplus.com/browse/entity-" + id;
+    }
+
+    /** YouTube id of a trailer, or "" (one TMDB request, remembered with the title's link). Blocking. */
+    String trailer(Pick p) {
+        if (p == null || p.id <= 0) return "";
+        String key = "yt:" + p.kind + p.id;
+        String saved = links.getString(key, null);
+        if (saved != null) return saved;
+        String id = "";
+        try {
+            JSONArray videos = get("/" + p.kind + "/" + p.id + "/videos?language=" + lang()).optJSONArray("results");
+            String any = "";
+            for (int i = 0; videos != null && i < videos.length(); i++) {
+                JSONObject v = videos.optJSONObject(i);
+                if (v == null || !"YouTube".equals(v.optString("site"))) continue;
+                String vid = v.optString("key");
+                if (vid.isEmpty()) continue;
+                if (any.isEmpty()) any = vid;
+                if ("Trailer".equals(v.optString("type"))) { id = vid; break; }
+            }
+            if (id.isEmpty()) id = any;
+        } catch (Exception e) {
+            AppLog.w("trailer: " + e.getMessage());
+            return "";
+        }
+        links.edit().putString(key, id).apply();
+        return id;
     }
 
     private static String watchmode(String path) throws IOException {
@@ -1098,17 +1405,24 @@ final class Recs {
             for (Pick p : picks) {
                 a.put(new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title).put("backdrop", p.backdrop)
                         .put("poster", p.poster == null ? "" : p.poster).put("link", p.link == null ? "" : p.link)
-                        .put("meta", p.meta).put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
+                        .put("meta", p.meta).put("overview", p.overview == null ? "" : p.overview)
+                        .put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
                         .put("detailed", p.detailed));
             }
-            SharedPreferences.Editor e = cache.edit().putString("picks", a.toString()).putInt("period", period).putLong("listAt", listAt)
+            JSONArray rowsJson = new JSONArray();
+            for (List<Row> tab : rows) {
+                JSONArray tabJson = new JSONArray();
+                for (Row r : tab) {
+                    JSONArray list = new JSONArray();
+                    for (Pick p : r.picks) list.put(pickJson(p));
+                    tabJson.put(new JSONObject().put("title", r.title).put("picks", list));
+                }
+                rowsJson.put(tabJson);
+            }
+            cache.edit().putString("picks", a.toString()).putString("rows", rowsJson.toString())
+                    .putInt("period", period).putLong("listAt", listAt)
                     .putString("language", listLanguage)
-                    .putLong("keyStamp", keyStamp).putInt("version", CACHE_VERSION);
-            // Watchmode links of titles no longer in the list go (the refused-key mark stays).
-            Set<String> keep = new HashSet<>();
-            for (Pick p : picks) keep.add(linkKey(p));
-            for (String k : cache.getAll().keySet()) if ((k.startsWith("wm:") || k.startsWith("wm2:")) && !k.equals("wm:refused") && !keep.contains(k)) e.remove(k);
-            e.apply();
+                    .putLong("keyStamp", keyStamp).putInt("version", CACHE_VERSION).apply();
         } catch (Exception ignored) {
         }
     }
@@ -1129,7 +1443,36 @@ final class Recs {
             p.app = o.optString("app").isEmpty() ? null : o.optString("app");
             p.pkg = o.optString("pkg").isEmpty() ? null : o.optString("pkg");
             p.detailed = o.optBoolean("detailed");
+            p.overview = o.optString("overview");
             out.add(p);
+        }
+        return out;
+    }
+
+    private static JSONObject pickJson(Pick p) throws org.json.JSONException {
+        return new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title).put("backdrop", p.backdrop)
+                .put("poster", p.poster == null ? "" : p.poster).put("link", p.link == null ? "" : p.link)
+                .put("meta", p.meta).put("overview", p.overview == null ? "" : p.overview)
+                .put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
+                .put("detailed", p.detailed);
+    }
+
+    /** Each row's titles, saved in full: they are not all in the hourly pool. */
+    private static List<List<Row>> parseRows(JSONArray tabs) {
+        List<List<Row>> out = new ArrayList<>();
+        for (int t = 0; t < tabs.length(); t++) {
+            JSONArray tab = tabs.optJSONArray(t);
+            List<Row> tabRows = new ArrayList<>();
+            if (tab != null) {
+                for (int i = 0; i < tab.length(); i++) {
+                    JSONObject o = tab.optJSONObject(i);
+                    if (o == null) continue;
+                    JSONArray list = o.optJSONArray("picks");
+                    List<Pick> picks = list == null ? new ArrayList<>() : parse(list);
+                    if (!picks.isEmpty()) tabRows.add(new Row(o.optString("title"), picks));
+                }
+            }
+            out.add(tabRows);
         }
         return out;
     }

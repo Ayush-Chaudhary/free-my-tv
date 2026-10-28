@@ -61,9 +61,26 @@ final class RemoteKeys {
         return TCL || STEM_NETFLIX || KTC || SONY || XIAOMI || HISENSE;
     }
 
-    /** The key service is on only where the filter is safe, and while a button opens something (else it has no work). */
+    /**
+     * The remote's mic / Assistant button. TCL's Google TV remote sends one of these (no separate vendor code in the
+     * maps we have): search 84, assist 219, voice assist 231.
+     */
+    static boolean voiceKey(int code) {
+        return code == KeyEvent.KEYCODE_SEARCH || code == KeyEvent.KEYCODE_ASSIST || code == KeyEvent.KEYCODE_VOICE_ASSIST;
+    }
+
+    /**
+     * Google TV's home stays on only where this service runs and can take the Home key back. Elsewhere the switch
+     * turns that home off as usual, even if keep_google_home is set.
+     */
+    static boolean keepGoogleHome() {
+        return Prefs.keepGoogleHome() && supported() && FILTER_SAFE;
+    }
+
+    /** The key service is on only where the filter is safe, and while it has work (a button, or Google's home left on). */
     static boolean serviceWanted() {
         if (!supported() || !FILTER_SAFE) return false;
+        if (keepGoogleHome()) return true;
         for (int key : Prefs.KEYS) if (!Prefs.keyApp(key).isEmpty()) return true;
         return false;
     }
