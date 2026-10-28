@@ -289,6 +289,10 @@ final class Prefs {
      * service cannot run: otherwise Home would stay on Google's screen with nothing to take it back.
      */
     static boolean keepGoogleHome() { return sp().getBoolean("keepGoogleHome", Config.KEEP_GOOGLE_HOME); }
+
+    /** The TCL remote's Assistant button opens our search (config assistant_button; Remote Buttons). See VoiceKeyActivity. */
+    static boolean assistButton() { return sp().getBoolean("assistButton", Config.ASSISTANT_BUTTON); }
+    static void setAssistButton(boolean on) { put("assistButton", on); }
     static void setQuotes(boolean on) { put("quotes", on); }
 
     /** Your photos (Photos, sent from a computer) on the screensaver and behind the home screen, once imported. */

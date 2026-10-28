@@ -1,7 +1,7 @@
 # Claude task: make the remote's Assistant button open Free My TV search
 
 Owner: Ayush. Hand-off file for Claude (research + development).
-Status: open. Update the Status line and the Log at the bottom as you go.
+Status: PR open (see the Log). Research done: `claude/research/assistant-button.md`. Update the Status line and the Log at the bottom as you go.
 
 ## Goal
 
@@ -96,3 +96,7 @@ short summary to the Log below.
 ## Log
 
 - 2026-10-28: Task created by Lumi for Ayush, based on Rudra's TV test of main (d36a0cf).
+- 2026-10-28: Claude. Research: the key filter can't see 219/231 on this TV, but the system turns the button into an
+  implicit `android.speech.action.WEB_SEARCH` intent (TV log from 24 October). Built `VoiceKeyActivity`, which answers
+  that intent (off by default; Remote Buttons → Assistant button, or `assistant_button=true`). Not tried on the TV yet:
+  the research file has the test steps, including a check of whether Google's filter outranks ours.

@@ -492,8 +492,22 @@ public class SettingsActivity extends Activity {
                 case TMDB_KEY: return keyRowIds.length;
                 case PICKS: return picksLabels().length;
                 case PICK_FROM: return Math.min(PICK_VISIBLE, services.size());
-                default: return Prefs.KEYS.length;
+                default: return keyRows();
             }
+        }
+
+        /** Remote Buttons: one row per button, then the Assistant button on TCL (VoiceKeyActivity). */
+        private static int keyRows() {
+            return Prefs.KEYS.length + (VoiceKeyActivity.offered() ? 1 : 0);
+        }
+
+        private static boolean assistRow(int row) {
+            return VoiceKeyActivity.offered() && row == Prefs.KEYS.length;
+        }
+
+        private void toggleAssistButton() {
+            Prefs.setAssistButton(!Prefs.assistButton());
+            VoiceKeyActivity.apply(getContext());
         }
 
         @Override protected void onDraw(Canvas c) {
@@ -1426,13 +1440,18 @@ public class SettingsActivity extends Activity {
                     Ui.tr("Netflix button"), Ui.tr("Disney+ button"),
                     Ui.tr("Prime Video button"), Ui.tr("YouTube button"),
                     Ui.tr("Crunchyroll button"), Ui.tr("Google Play button")};
-            return new String[] {Ui.tr("Netflix button"), Ui.tr("YouTube button"),
+            String[] tcl = {Ui.tr("Netflix button"), Ui.tr("YouTube button"),
                     Ui.tr("Prime Video button"), Ui.tr("TCL Channel button"), Ui.tr("Apple TV button")};
+            if (!VoiceKeyActivity.offered()) return tcl;
+            String[] v = java.util.Arrays.copyOf(tcl, tcl.length + 1);
+            v[tcl.length] = Ui.tr("Assistant button");
+            return v;
         }
 
         private String[] keyValues() {
-            String[] v = new String[Prefs.KEYS.length];
-            for (int i = 0; i < v.length; i++) {
+            String[] v = new String[keyRows()];
+            if (VoiceKeyActivity.offered()) v[Prefs.KEYS.length] = Prefs.assistButton() ? Ui.tr("Search") : Ui.tr("Google Assistant");
+            for (int i = 0; i < Prefs.KEYS.length; i++) {
                 int at = appPkgs.indexOf(Prefs.keyApp(Prefs.KEYS[i]));
                 v[i] = at >= 0 ? appLabels.get(at) : Ui.tr("Not installed");
             }
@@ -1498,6 +1517,10 @@ public class SettingsActivity extends Activity {
                 return;
             }
             if (screen == REMOTE_KEYS) {
+                if (assistRow(focus)) {
+                    toggleAssistButton();
+                    return;
+                }
                 int n = appPkgs.size();
                 int at = appPkgs.indexOf(Prefs.keyApp(Prefs.KEYS[focus]));
                 int next = at < 0 ? (dir > 0 ? 0 : n - 1) : (at + dir + n) % n;
@@ -2143,6 +2166,7 @@ public class SettingsActivity extends Activity {
                     : Ui.tr("OK removes them; the arrows turn them on or off."))
                     : screen == POWER && powerRow() != P_SHOW && unavailable(focus) == null ? Ui.tr("OK opens the list. ← → change the value.")
                     : screen == HOME_SETTINGS && from + focus == keyRow() ? Ui.tr("OK: send it from your phone, or type it.")
+                    : keys && assistRow(focus) && Prefs.assistButton() ? Ui.tr("Next press: pick Free My TV, then Always.")
                     : screen == HOME_SETTINGS && from + focus == updatesRow() ? (Updates.ready(updates, installed)
                     ? Ui.tr("OK installs it; Android asks first.") : Ui.tr("OK checks for a new version."))
                     : Ui.tr("OK or the arrows change the value.")), LIST_X * k + 30 * k, hy, hint);
@@ -2193,7 +2217,7 @@ public class SettingsActivity extends Activity {
                 invalidate();
                 return;
             } else if (screen == REMOTE_KEYS) {
-                openPicker(focus + 1);
+                if (assistRow(focus)) toggleAssistButton(); else openPicker(focus + 1);
             } else if (screen == HOME_SETTINGS && pickScroll + focus == 0) {
                 openPicker(PICK_LANGUAGE);
             } else if (screen == HOME_SETTINGS && pickScroll + focus == CITY_ROW) {
