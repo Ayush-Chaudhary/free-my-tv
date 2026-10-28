@@ -3652,6 +3652,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
     void applyDemo(String shot) {
         demoHold = true;
         demoWeather = "22°  Partly cloudy";
+        String which = shot == null ? "movies" : shot;
+        AppLog.w("demo home " + which);
         int[][] colors = {
                 {0xFF0F3B57, 0xFFE7A35B}, {0xFF071C33, 0xFF2A6FA8}, {0xFF2B0A2E, 0xFFB0306F},
                 {0xFF1F2430, 0xFF8794A8}, {0xFF143028, 0xFF3FA37A}, {0xFF3A2412, 0xFFD08A45}
@@ -3687,8 +3689,6 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
         showRows.add(new Recs.Row(Ui.tr("Top 10 Shows today"), shows, true));
         showRows.add(new Recs.Row(Ui.tr("New this week"), freshShows));
         demoRows.put("tv", showRows);
-        String which = shot == null ? "movies" : shot;
-        AppLog.w("demo home " + which);
         if (which.startsWith("explore")) {
             tab = 0;
         } else if (which.startsWith("show")) {
@@ -3729,12 +3729,14 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             p.overview = about[i % about.length];
             p.app = "streamly";
             p.pkg = "io.freemytv.demo";
-            p.backdrop = "demo-" + kind + "-" + p.id;
-            p.detailed = true;
             int c = i % colors.length;
-            Bitmap src = gradient(colors[c][0], colors[c][1], 1280, 720);
-            demoArt.put(p.backdrop, Backdrop.make(src, true));
-            demoPoster.put(p.backdrop, new Recs.Poster(gradient(colors[c][1], colors[c][0], 500, 750)));
+            p.backdrop = "demo-" + c;
+            p.detailed = true;
+            if (!demoArt.containsKey(p.backdrop)) {
+                Bitmap src = gradient(colors[c][0], colors[c][1], 1280, 720);
+                demoArt.put(p.backdrop, Backdrop.make(src, true));
+                demoPoster.put(p.backdrop, new Recs.Poster(gradient(colors[c][1], colors[c][0], 500, 750)));
+            }
             out.add(p);
         }
         return out;
