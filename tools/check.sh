@@ -21,6 +21,7 @@ fi
 
 if [ "$what" = all ] || [ "$what" = web ]; then
   python3 tools/translate.py --check
+  python3 tools/make_tokens.py --check
 
   # The generic LG and Samsung packages land where your own build leaves yours (with your city and TMDB key):
   # keep yours and put them back afterwards, so the next install isn't the generic one.

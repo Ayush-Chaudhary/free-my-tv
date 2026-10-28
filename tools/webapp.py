@@ -93,6 +93,12 @@ def files(config, made_by):
             continue
         with open(os.path.join(web, name), 'rb') as f:
             out[name] = f.read()
+    extra_symbols = os.path.join(web, 'symbols')
+    if os.path.isdir(extra_symbols):
+        for name in sorted(os.listdir(extra_symbols)):
+            if name.endswith('.png'):
+                with open(os.path.join(extra_symbols, name), 'rb') as f:
+                    out['symbols/' + name] = f.read()
     icons = os.path.join(web, 'icons')
     for name in sorted(os.listdir(icons)):
         with open(os.path.join(icons, name), 'rb') as f:

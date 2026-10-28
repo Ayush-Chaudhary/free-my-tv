@@ -45,7 +45,11 @@ var Prefs = (function () {
     version: 0,
     language: function () { return pick('language', CONFIG.language || 'auto'); },
     temperature: function () { return pick('temperature', CONFIG.temperature || 'auto'); },
-    theme: function () { return pick('theme', CONFIG.theme || 'auto'); },
+    /** Dark or Light. Anything older ('auto', a missing value) is Dark, the default. */
+    theme: function () {
+      var t = pick('theme', CONFIG.theme || 'dark');
+      return t === 'light' ? 'light' : 'dark';
+    },
     weather: function () { return pick('weather', true); },
     /** OK on the screensaver opens the title it shows, in its app; any other key only closes it (off by default). */
     saverWatch: function () { return pick('saverWatch', false) === true; },
@@ -274,6 +278,7 @@ var Data = (function () {
   // MARK: - Picks (TMDB)
 
   var KEY = Prefs.tmdbKey();
+  var demoOn = false, demoAll = [];
   var REGION = Place.country;
   var API = 'https://api.tmdb.org/3';   // TMDB's own mirror of api.themoviedb.org: some ISPs block the other name (#327)
 
@@ -345,9 +350,13 @@ var Data = (function () {
 
   var cache = stored('recs') || {};
   var picks = cache.picks || [], listAt = cache.listAt || 0, period = cache.period, listLang = cache.lang || '', stamp = cache.stamp || '';
+  var movieRows = cache.movieRows || [], tvRows = cache.tvRows || [];
+  var rowsLoaded = cache.movieRows !== undefined;
   var fetchingRecs = false, failedAt = 0, recsError = '';
 
-  function saveRecs() { store('recs', {picks: picks, listAt: listAt, period: period, lang: listLang, stamp: stamp}); }
+  function saveRecs() {
+    store('recs', {picks: picks, listAt: listAt, period: period, lang: listLang, stamp: stamp, movieRows: movieRows, tvRows: tvRows});
+  }
 
   function hourPeriod(d) {
     var h = d.getHours();
@@ -369,7 +378,7 @@ var Data = (function () {
   /** This hour's picks (Prefs.cards()): movies ("movie"), shows ("tv") or both (null). */
   function now(kind) {
     var list = [];
-    if (!KEY) return list;
+    if (!KEY && !demoOn) return list;
     for (var i = 0; i < picks.length; i++) {
       var p = picks[i];
       if ((kind === null || kind === p.kind) && (!p.detailed || (p.app && usable(p.app)))) list.push(p);
@@ -503,6 +512,121 @@ var Data = (function () {
     })();
   }
 
+  /** A row keeps the ten the home screen can show (Top 10). Genres match the Android list. */
+  var ROW_CAP = 10;
+  var MOVIE_GENRES = [28, 35, 18, 53, 27, 878, 10749, 16];
+  var TV_GENRES = [10759, 35, 18, 80, 10765, 9648, 16, 10764];
+
+  /**
+   * Top 10, New on your apps, then one row per genre. Titles already in the hourly pool are the same objects,
+   * so their details are fetched once. Requests run one after another.
+   */
+  function buildAllRows(common, hot, fresh, done) {
+    var byKey = {};
+    function remember(list) {
+      for (var i = 0; list && i < list.length; i++) {
+        var k = keyOf(list[i]);
+        if (!byKey[k]) byKey[k] = list[i];
+      }
+    }
+    remember(picks);
+    remember(hot.movie);
+    remember(hot.tv);
+    remember(fresh.movie);
+    remember(fresh.tv);
+    function adopt(list) {
+      var out = [], seen = {};
+      for (var i = 0; list && i < list.length && out.length < ROW_CAP; i++) {
+        var k = keyOf(list[i]);
+        if (seen[k]) continue;
+        seen[k] = true;
+        if (!byKey[k]) byKey[k] = list[i];
+        out.push(byKey[k]);
+      }
+      return out;
+    }
+    function discoverRow(kind, filters, then) {
+      tmdb('/discover/' + kind + '?page=1' + filters, function (err, res) {
+        var list = [];
+        var results = !err && res && res.results ? res.results : [];
+        for (var i = 0; i < results.length && list.length < ROW_CAP; i++) addPick(list, results[i], kind);
+        then(adopt(list));
+      });
+    }
+    function genreMap(kind, then) {
+      tmdb('/genre/' + kind + '/list?language=' + lang(), function (err, res) {
+        var names = {};
+        var list = !err && res && res.genres ? res.genres : [];
+        for (var i = 0; i < list.length; i++) names[list[i].id] = list[i].name;
+        then(names);
+      });
+    }
+    genreMap('movie', function (movieNames) {
+      genreMap('tv', function (tvNames) {
+        var built = {movie: [], tv: []};
+        each(['movie', 'tv'], function (kind, nextKind) {
+          var movie = kind === 'movie';
+          var rows = [];
+          var names = movie ? movieNames : tvNames;
+          function afterTop(topList) {
+            if (topList.length) rows.push({title: movie ? tr('Top 10 Movies') : tr('Top 10 Shows'), top10: true, picks: topList});
+            var freshList = adopt(movie ? fresh.movie : fresh.tv);
+            function afterFresh(list) {
+              if (list.length) rows.push({title: tr('New on your apps'), top10: false, picks: list});
+              var ids = movie ? MOVIE_GENRES : TV_GENRES;
+              each(ids, function (g, nextG) {
+                if ((CONFIG.hideAnimation && g === ANIMATION) || !names[g]) { nextG(); return; }
+                discoverRow(kind, '&vote_count.gte=' + (movie ? 80 : 40) + '&with_genres=' + g + common, function (row) {
+                  if (row.length) rows.push({title: genre(names[g]), top10: false, picks: row});
+                  nextG();
+                });
+              }, function () {
+                built[kind] = rows;
+                nextKind();
+              });
+            }
+            if (freshList.length) afterFresh(freshList);
+            else discoverRow(kind, (movie
+              ? '&vote_count.gte=30&primary_release_date.gte=' + day(-365) + '&primary_release_date.lte=' + day(0)
+              : '&vote_count.gte=20&air_date.gte=' + day(-90) + '&air_date.lte=' + day(0)) + common, afterFresh);
+          }
+          var top = adopt(movie ? hot.movie : hot.tv);
+          if (top.length >= ROW_CAP) afterTop(top);
+          else discoverRow(kind, '&vote_count.gte=' + (movie ? 200 : 100) + common, function (more) {
+            afterTop(adopt(top.concat(more)));
+          });
+        }, function () {
+          movieRows = built.movie;
+          tvRows = built.tv;
+          rowsLoaded = true;
+          done();
+        });
+      });
+    });
+  }
+
+  var warmToken = '';
+
+  /** Details for the row on screen (the wide card first), then one refresh so the caption can appear. */
+  function warmRow(kind, index) {
+    if (demoOn) return;
+    var rows = kind === 'tv' ? tvRows : movieRows;
+    var row = rows[index];
+    if (!row || !row.picks.length) return;
+    var token = kind + ':' + index + ':' + keyOf(row.picks[0]) + ':' + row.picks.length;
+    if (token === warmToken) return;
+    warmToken = token;
+    var first = row.picks[0];
+    function rest() {
+      var todo = [];
+      for (var i = 0; i < row.picks.length; i++) if (!row.picks[i].detailed) todo.push(row.picks[i]);
+      if (!todo.length) return;
+      each(todo, function (p, next) { details(p, function () { next(); }); }, function () { saveRecs(); changed(); });
+    }
+    if (!first.detailed) details(first, function () { changed(); rest(); });
+    else rest();
+  }
+
   function fetchList(done) {
     tmdb('/watch/providers/movie?language=' + lang() + '&watch_region=' + REGION, function (err, res) {
       if (err) { done(err); return; }
@@ -535,7 +659,7 @@ var Data = (function () {
             alternate(list, seen, fresh.movie, fresh.tv, 24);
             if (!list.length) { done(new Error('TMDB returned no recommendations')); return; }
             picks = list;
-            done(null);
+            buildAllRows(common, hot, fresh, function () { done(null); });
           });
         });
       });
@@ -547,7 +671,7 @@ var Data = (function () {
     if (!KEY || fetchingRecs || !installed.length) return;
     var t = Date.now(), p = hourPeriod(new Date()), st = sourceStamp();
     if (st === stamp && failedAt && t - failedAt < 10 * 60000 && t >= failedAt) return;
-    var stale = st !== stamp || p !== period || t - listAt > 6 * 3600000 || t < listAt || !picks.length || listLang !== I18N.lang;
+    var stale = st !== stamp || p !== period || t - listAt > 6 * 3600000 || t < listAt || !picks.length || listLang !== I18N.lang || !rowsLoaded;
     var wanted = all(), missing = false;
     for (var i = 0; i < wanted.length; i++) missing = missing || !wanted[i].detailed;
     if (!stale && !missing) return;
@@ -586,6 +710,111 @@ var Data = (function () {
     return out;
   }
 
+  var searchCache = {};
+
+  /** Movies and shows for a typed search: one TMDB request, remembered for this session. */
+  function searchHits(query, done) {
+    var q = String(query || '').replace(/^\s+|\s+$/g, '');
+    if (q.length < 2) { done(null, []); return; }
+    var cacheKey = (I18N.lang || 'en') + '|' + REGION + '|' + q.toLowerCase();
+    if (searchCache[cacheKey]) { done(null, searchCache[cacheKey]); return; }
+    if (demoOn || !KEY) {
+      var found = [], needle = q.toLowerCase();
+      for (var i = 0; i < demoAll.length && found.length < 8; i++) {
+        if (demoAll[i].title.toLowerCase().indexOf(needle) >= 0) found.push(demoAll[i]);
+      }
+      searchCache[cacheKey] = found;
+      done(null, found);
+      return;
+    }
+    tmdb('/search/multi?include_adult=false&language=' + lang() + '&query=' + encodeURIComponent(q), function (err, res) {
+      if (err) { done(err); return; }
+      var out = [], results = res && res.results ? res.results : [];
+      for (var j = 0; j < results.length && out.length < 8; j++) {
+        var o = results[j], kind = o.media_type;
+        if (kind !== 'movie' && kind !== 'tv') continue;
+        var one = [];
+        addPick(one, o, kind);
+        if (one.length) out.push(one[0]);
+      }
+      searchCache[cacheKey] = out;
+      done(null, out);
+    });
+  }
+
+  function visibleRows(kind) {
+    var list = kind === 'movie' ? movieRows : kind === 'tv' ? tvRows : [];
+    var out = [];
+    for (var r = 0; r < list.length; r++) {
+      var src = list[r].picks, kept = [];
+      for (var i = 0; i < src.length && kept.length < ROW_CAP; i++) {
+        var p = src[i];
+        // Until the details arrive, keep the title. After that, only if its app is still on.
+        if (!p.detailed || (p.app && usable(p.app))) kept.push(p);
+      }
+      if (kept.length) out.push({title: list[r].title, top10: !!list[r].top10, picks: kept});
+    }
+    return out;
+  }
+
+  /**
+   * Browser preview with no TMDB key: the same row shape as a TV that has one, with invented titles
+   * (gradient art, no images to decode). A real TV without a key keeps the quiet clock home.
+   */
+  function seedDemo() {
+    demoOn = true;
+    var show = 12, c = Place.fahrenheit ? (show - 32) * 5 / 9 : show;
+    weather = {temp: c, code: 0, isDay: true, max: c + 3, min: c - 3, sunrise: 0, sunset: 0, hours: [], days: []};
+    function pick(id, kind, title, meta, app, service, a, b, col) {
+      return {id: id, kind: kind, title: title, meta: meta, app: app, service: service, art: [a, b, col],
+        backdrop: '', poster: '', detailed: true, overview: ''};
+    }
+    var movies = [
+      pick(1, 'movie', 'Paper Satellites', 'Sci-fi · 2 h 04 m · Netflix', 'netflix', 'Netflix', '#1B1446', '#6C4BD8', '#F2B8E8'),
+      pick(2, 'movie', 'Copper Hour', 'Thriller · 1 h 52 m · Max', 'max', 'Max', '#3A1A0E', '#C4572B', '#F7C08A'),
+      pick(3, 'movie', 'A Quiet Orbit', 'Drama · 1 h 41 m · Disney+', 'disney', 'Disney+', '#121418', '#4A5568', '#D9E2EC'),
+      pick(4, 'movie', 'Saffron Lane', 'Comedy · 1 h 38 m · Prime Video', 'prime', 'Prime Video', '#4A1C05', '#E08A1E', '#FFE0A3'),
+      pick(5, 'movie', 'Northbound', 'Adventure · 2 h 11 m · Max', 'max', 'Max', '#14213D', '#5C7CBA', '#E5ECF6'),
+      pick(6, 'movie', 'Velvet Static', 'Music · 1 h 47 m · Netflix', 'netflix', 'Netflix', '#2B0A2E', '#B0306F', '#FFB3C7'),
+      pick(7, 'movie', 'The Marsh Hours', 'Thriller · 1 h 58 m · Prime Video', 'prime', 'Prime Video', '#1D2B1F', '#6E8F5C', '#E3EBC8'),
+      pick(8, 'movie', 'Kite Season', 'Family · 1 h 33 m · Apple TV', 'appletv', 'Apple TV', '#0A3440', '#21A1A8', '#C6F1EE'),
+      pick(9, 'movie', 'Midnight Orchid', 'Romance · 1 h 49 m · Disney+', 'disney', 'Disney+', '#170A2A', '#5B2A86', '#E0C3FC'),
+      pick(10, 'movie', 'Harbor Letters', 'Drama · 1 h 44 m · Netflix', 'netflix', 'Netflix', '#1A2744', '#3D5A80', '#E0FBFC')
+    ];
+    var shows = [
+      pick(11, 'tv', 'The Lantern Coast', 'Mystery · 3 seasons · Netflix', 'netflix', 'Netflix', '#0F3B57', '#E7A35B', '#F6D7A7'),
+      pick(12, 'tv', 'Hollow Pines', 'Drama · 3 seasons · Prime Video', 'prime', 'Prime Video', '#0D2A1E', '#2F7D57', '#BFE3C6'),
+      pick(13, 'tv', 'Tidewater Nights', 'Limited series · 6 episodes · Netflix', 'netflix', 'Netflix', '#071C33', '#2A6FA8', '#9FD3F2'),
+      pick(14, 'tv', 'Glasshouse', 'Thriller · 2 seasons · Apple TV', 'appletv', 'Apple TV', '#1E1B18', '#8C7B6B', '#EDE3D9'),
+      pick(15, 'tv', 'Ember & Ash', 'Fantasy · 1 season · Disney+', 'disney', 'Disney+', '#2A0E0A', '#A3341F', '#FFB089'),
+      pick(16, 'tv', 'Ninth Floor', 'Comedy · 4 seasons · Max', 'max', 'Max', '#101820', '#36506B', '#C9D6E3'),
+      pick(17, 'tv', 'Silver Ridge', 'Western · 2 seasons · Netflix', 'netflix', 'Netflix', '#1F2430', '#8794A8', '#F0F3F8'),
+      pick(18, 'tv', 'Camp Meridian', 'Drama · 1 season · Prime Video', 'prime', 'Prime Video', '#24301C', '#6B8F71', '#E4EBD4'),
+      pick(19, 'tv', 'Winter Gate', 'Mystery · 1 season · Max', 'max', 'Max', '#1B2430', '#6E7C93', '#D5DDEA'),
+      pick(20, 'tv', 'Ferry Road', 'Drama · 2 seasons · Disney+', 'disney', 'Disney+', '#10243A', '#3E7CB1', '#C5DFF0')
+    ];
+    function some(list, ids) {
+      var out = [];
+      for (var i = 0; i < ids.length; i++) out.push(list[ids[i]]);
+      return out;
+    }
+    movieRows = [
+      {title: tr('Top 10 Movies'), top10: true, picks: movies},
+      {title: tr('New on your apps'), top10: false, picks: some(movies, [4, 8, 7, 5, 6, 3, 1])},
+      {title: 'Thriller', top10: false, picks: some(movies, [1, 6, 4, 2, 5, 0, 7])}
+    ];
+    tvRows = [
+      {title: tr('Top 10 Shows'), top10: true, picks: shows},
+      {title: tr('New on your apps'), top10: false, picks: some(shows, [2, 4, 6, 1, 5, 3, 0])},
+      {title: 'Drama', top10: false, picks: some(shows, [1, 7, 9, 2, 5, 0, 4])}
+    ];
+    picks = [];
+    for (var i = 0; i < 6; i++) { picks.push(movies[i]); picks.push(shows[i]); }
+    demoAll = movies.concat(shows);
+    rowsLoaded = true;
+  }
+  if (TV.name === 'browser' && !KEY) seedDemo();
+
   // MARK: - Formatting
 
   function fmt(v, digits) {
@@ -618,6 +847,25 @@ var Data = (function () {
     get pricesAt() { return pricesAt; },
     activeCoins: activeCoins,
     hasKey: function () { return !!KEY; },
+    /** Browser stand-in: sample rows so the screen can be reviewed without a key or a TV. */
+    demo: function () { return demoOn; },
+    rows: visibleRows,
+    warm: warmRow,
+    search: searchHits,
+    recent: function () {
+      var list = stored('recent');
+      if (list && list.length) return list;
+      return demoOn ? ['Hollow Pines', 'Northbound', 'YouTube'] : [];
+    },
+    remember: function (q) {
+      q = String(q || '').replace(/^\s+|\s+$/g, '');
+      if (q.length < 2) return;
+      var list = stored('recent') || [], next = [q];
+      for (var i = 0; i < list.length && next.length < 8; i++) {
+        if (list[i].toLowerCase() !== q.toLowerCase()) next.push(list[i]);
+      }
+      store('recent', next);
+    },
     checkKey: checkKey,
     /** A key typed (or removed) on the TV: the picks come again with it, or go. */
     keyChanged: function () { KEY = Prefs.tmdbKey(); recsError = ''; failedAt = 0; refreshRecs(); changed(); },
@@ -627,15 +875,8 @@ var Data = (function () {
     image: function (path, size) { return path ? 'https://image.tmdb.org/t/p/' + (size || 'w1280') + path : ''; },
 
     /** Night at the location: from sunset to sunrise (the last forecast; without one, 6:00 and 18:00). */
-    isNight: function (at) {
-      var theme = Prefs.theme();
-      if (theme === 'dark') return true;
-      if (theme === 'light') return false;
-      var d = new Date(at), mins = d.getHours() * 60 + d.getMinutes();
-      function hm(t, fallback) { if (!t) return fallback; var x = new Date(t); return x.getHours() * 60 + x.getMinutes(); }
-      var rise = hm(weather && weather.sunrise, 360), set = hm(weather && weather.sunset, 1080);
-      return mins < rise || mins >= set;
-    },
+    /** Home Settings → Theme. Dark is the default; Light is the only other look. */
+    isNight: function () { return Prefs.theme() !== 'light'; },
 
     compact: function (v) {
       if (isNaN(v)) return '—';

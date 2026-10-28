@@ -137,10 +137,10 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 #quotes {
   position: absolute;
   right: 80px;
-  top: 178px;
-  height: 28px;
-  font-size: 21px;
-  line-height: 28px;
+  top: 174px;
+  height: 32px;
+  font-size: 28px;
+  line-height: 32px;
   color: #8E8E93;
   white-space: nowrap;
   -webkit-transition: opacity 0.17s;
@@ -149,7 +149,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   font-feature-settings: 'tnum';
 }
 #quotes .q { display: inline-block; margin-left: 24px; }
-#quotes svg { width: 15px; height: 15px; vertical-align: -1px; margin-right: 6px; fill: rgba(142, 142, 147, 0.7); }
+#quotes svg { width: 28px; height: 28px; vertical-align: -6px; margin-right: 8px; fill: rgba(142, 142, 147, 0.7); }
 #quotes.hide { opacity: 0; }
 .night #quotes { color: rgba(245, 245, 247, 0.62); }
 .night #quotes svg { fill: rgba(245, 245, 247, 0.55); }
@@ -177,7 +177,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   width: 300px;
   margin-left: -150px;
   text-align: center;
-  font-size: 23px;
+  font-size: 28px;
   font-weight: 600;
   white-space: nowrap;
   opacity: 0;
@@ -257,8 +257,21 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   -webkit-transition: opacity 0.17s;
   transition: opacity 0.17s;
 }
-.card.focus { -webkit-transform: translateY(-6px) scale(1.05); transform: translateY(-6px) scale(1.05); z-index: 2; }
-.card.focus .img { box-shadow: 0 24px 46px rgba(0, 0, 0, 0.34); }
+.card.focus { -webkit-transform: translateY(-6px) scale(1.05); transform: translateY(-6px) scale(1.05); z-index: 4; }
+/* Ring sits outside the image (the image clips). The drop shadow is in tokens.css; .lite removes shadows and keeps this ring. */
+.card.focus::before {
+  content: '';
+  position: absolute;
+  left: -5px;
+  top: -5px;
+  right: -5px;
+  bottom: -5px;
+  border-radius: 23px;
+  border: 4px solid transparent;
+  outline: 2px solid transparent;
+  pointer-events: none;
+  z-index: 4;
+}
 .card.focus .img::after { opacity: 1; }
 .card .name {
   position: absolute;
@@ -268,7 +281,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 31px;
+  font-size: 32px;
   font-weight: 600;
   letter-spacing: 0.012em;
   color: #1D1D1F;
@@ -283,7 +296,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 25px;
+  font-size: 28px;
   font-weight: 500;
   color: #6E6E73;
   opacity: 0;
@@ -382,7 +395,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
   -webkit-transition: opacity 0.17s;
   transition: opacity 0.17s;
 }
-.tile.focus { -webkit-transform: scale(1.2); transform: scale(1.2); box-shadow: 0 18px 40px rgba(0, 0, 0, 0.34); z-index: 2; }
+.tile.focus { -webkit-transform: scale(1.2); transform: scale(1.2); outline: 3px solid #FFF; box-shadow: 0 18px 40px rgba(0, 0, 0, 0.34); z-index: 2; }
 .tile.focus::after { opacity: 1; }
 .night .tile { box-shadow: 0 4px 22px rgba(0, 0, 0, 0.3); }
 .night .tile.focus { box-shadow: 0 18px 40px rgba(0, 0, 0, 0.6); }
@@ -537,7 +550,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 #citypick .row.field input::placeholder, #keypick .row.field input::placeholder { color: rgba(255, 255, 255, 0.4); }
 #citypick .row { overflow: hidden; text-overflow: ellipsis; }
 #about .row .value.cut { overflow: hidden; text-overflow: ellipsis; }
-.box .hint { padding: 14px 18px 0; font-size: 22px; font-weight: 500; color: rgba(255, 255, 255, 0.5); }
+.box .hint { padding: 14px 18px 0; font-size: 28px; font-weight: 500; color: rgba(255, 255, 255, 0.5); line-height: 1.35; }
 .box .hint.warn { color: #FFC266; }
 .box .hint.steps { white-space: pre-line; line-height: 1.4; }
 .toggle { position: absolute; right: 24px; top: 13px; width: 78px; height: 44px; border-radius: 22px; background: #3A3D45; -webkit-transition: background-color 0.14s; transition: background-color 0.14s; }
@@ -593,8 +606,306 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 }
 #toast.on { opacity: 1; -webkit-transform: translate(-50%, 0); transform: translate(-50%, 0); }
 
-/* The Magic Remote's pointer: no text selection, no outlines. */
+/* The Magic Remote's pointer: no text selection, no outlines on controls.
+   The card's focus ring is an outline, so it is set back below and this reset stays above it in the file
+   only for elements that aren't the ring. */
+button, .tile, .tab, .k, .srow, .sec { outline: none; }
 * { -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
+
+/* MARK: - Rows: one row at a time (Movies, Shows). The shelf does not move. */
+
+#hclock {
+  position: absolute;
+  top: 80px;
+  right: 454px;
+  line-height: 46px;
+  text-align: right;
+  opacity: 0.9;
+  display: none;
+  -webkit-font-feature-settings: 'tnum';
+  font-feature-settings: 'tnum';
+}
+#hclock small { display: block; line-height: 34px; margin-top: 2px; }
+body.rows #hclock { display: block; }
+body.rows #quotes { visibility: hidden; }
+
+#rowview {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1920px;
+  height: 820px;
+  pointer-events: none;
+  -webkit-transition: opacity 0.3s, -webkit-transform 0.32s cubic-bezier(0.32, 0.78, 0.2, 1);
+  transition: opacity 0.3s, transform 0.32s cubic-bezier(0.32, 0.78, 0.2, 1);
+}
+#rowhead { display: none; }
+body.rows #rowhead { display: block; }
+.rowname {
+  position: absolute;
+  left: 80px;
+  top: 248px;
+  margin: 0;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.rowname .count { margin-left: 14px; }
+.rownext {
+  position: absolute;
+  right: 80px;
+  top: 252px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.rownext .sym { width: 28px; height: 28px; vertical-align: -6px; margin-left: 8px; }
+.rownext .prev { margin-right: 36px; }
+.rownext .prev .sym { margin: 0 8px 0 0; }
+.numeral {
+  position: absolute;
+  width: 260px;
+  font-size: 270px;
+  font-weight: 800;
+  line-height: 0.78;
+  letter-spacing: -0.04em;
+  text-align: right;
+  z-index: 1;
+  pointer-events: none;
+}
+#cards .card { pointer-events: auto; }
+body.rows .card { top: 310px; height: 360px; }
+body.rows .card .name { top: 380px; }
+body.rows .card .meta { top: 422px; }
+.card .meta.cap { opacity: 1; }
+
+.art { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+.art .sun { position: absolute; border-radius: 50%; }
+.art .hz { position: absolute; left: 0; right: 0; bottom: 0; }
+.art .t {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 18px;
+  color: #FFF;
+  font-size: 28px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1.05;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+}
+
+/* MARK: - Search: on-screen keyboard, no voice (that stays on Android). */
+
+#search {
+  z-index: 3;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  -webkit-transition: opacity 0.24s, visibility 0s 0.24s;
+  transition: opacity 0.24s, visibility 0s 0.24s;
+}
+body.search-open #home { opacity: 0; pointer-events: none; }
+body.search-open #search { opacity: 1; visibility: visible; pointer-events: auto; -webkit-transition-delay: 0s; transition-delay: 0s; }
+.field {
+  position: absolute;
+  left: 80px;
+  top: 72px;
+  width: 1760px;
+  height: 100px;
+  border-radius: 50px;
+  box-sizing: border-box;
+  padding-left: 96px;
+  font-size: 40px;
+  font-weight: 500;
+  line-height: 100px;
+  color: #1D1D1F;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.field .sym { position: absolute; left: 36px; top: 32px; width: 36px; height: 36px; }
+.field .ph { color: #8E8E93; }
+.night .field { color: #F5F5F7; }
+.night .field .ph { color: rgba(245, 245, 247, 0.5); }
+.field .caret {
+  display: inline-block;
+  width: 3px;
+  height: 46px;
+  margin-left: 4px;
+  border-radius: 2px;
+  background: #1D1D1F;
+  vertical-align: -8px;
+}
+.night .field .caret { background: #F5F5F7; }
+#kb { position: absolute; left: 80px; top: 220px; width: 636px; height: 680px; }
+#kb.dim { opacity: 0.32; }
+.k {
+  position: absolute;
+  width: 96px;
+  height: 84px;
+  border-radius: 18px;
+  font-size: 36px;
+  font-weight: 500;
+  line-height: 84px;
+  text-align: center;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+  -webkit-transition: -webkit-transform 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.15);
+  transition: transform 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.15);
+}
+.night .k { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08); }
+.k .sym { width: 32px; height: 32px; vertical-align: -6px; }
+.k.wide { font-size: 30px; }
+.k.focus { -webkit-transform: scale(1.12); transform: scale(1.12); box-shadow: 0 14px 30px rgba(0, 0, 0, 0.3); z-index: 2; }
+#searchpane { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; pointer-events: none; }
+#searchpane .card, #searchpane .apptile, #searchpane .pill, #searchpane .hint { pointer-events: auto; }
+#searchpane .chips { position: absolute; white-space: nowrap; }
+#searchpane .pill {
+  display: inline-block;
+  height: 76px;
+  line-height: 76px;
+  padding: 0 28px;
+  margin-right: 16px;
+  border-radius: 38px;
+  font-size: 30px;
+  font-weight: 500;
+  color: #1D1D1F;
+  white-space: nowrap;
+}
+.night #searchpane .pill { color: #F5F5F7; }
+#searchpane .pill .sym { width: 28px; height: 28px; vertical-align: -5px; margin-right: 12px; }
+#searchpane .pill.focus { background: #FFF; color: #1D1D1F; -webkit-transform: scale(1.06); transform: scale(1.06); box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3); }
+.apptile { position: absolute; width: 210px; height: 118px; border-radius: 22px; color: #FFF; }
+.apptile .word {
+  position: absolute;
+  left: 8%;
+  right: 8%;
+  top: 50%;
+  margin-top: -18px;
+  height: 36px;
+  line-height: 36px;
+  text-align: center;
+  font-size: 28px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.apptile .lab {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 132px;
+  text-align: center;
+  font-size: 28px;
+  font-weight: 500;
+  color: #6E6E73;
+  white-space: nowrap;
+}
+.night .apptile .lab { color: rgba(245, 245, 247, 0.68); }
+.apptile.focus { -webkit-transform: scale(1.06); transform: scale(1.06); box-shadow: 0 0 0 4px #FFF, 0 0 0 6px rgba(0, 0, 0, 0.28); z-index: 2; }
+#searchpane .empty-ico { position: absolute; width: 96px; height: 96px; color: #8E8E93; }
+.night #searchpane .empty-ico { color: rgba(245, 245, 247, 0.5); }
+#searchpane .hint { position: absolute; font-size: 30px; font-weight: 500; line-height: 1.4; color: #6E6E73; }
+.night #searchpane .hint { color: rgba(245, 245, 247, 0.68); }
+#searchpane .hitrow { position: absolute; left: 800px; top: 274px; width: 1120px; height: 500px; }
+#searchpane .hitrow .card { top: 0; height: 360px; }
+#searchpane .pop { top: 470px; width: 230px; height: 345px; }
+#searchpane .card .name { top: 380px; }
+#searchpane .card .meta { top: 422px; opacity: 1; }
+#searchpane .empty-title { font-size: 48px; letter-spacing: 0; text-transform: none; }
+.apptile.focus { outline: 4px solid #FFF; }
+
+/* MARK: - Home Settings, grouped: a section rail and that section's rows. */
+
+#settings.set-grouped { background: transparent; }
+#settings .set-bg { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; }
+/* Beats .sheet h2 (centered, full width): the title stays in the left rail. */
+#settings .set-h {
+  position: absolute;
+  left: 120px;
+  right: auto;
+  top: 92px;
+  width: auto;
+  margin: 0;
+  text-align: left;
+  font-size: 44px;
+  font-weight: 700;
+}
+.set-h .sym { width: 42px; height: 42px; vertical-align: -7px; margin-right: 16px; }
+.set-h small { display: block; font-weight: 500; margin-top: 10px; }
+.sec {
+  position: absolute;
+  left: 100px;
+  width: 640px;
+  height: 76px;
+  border-radius: 20px;
+  box-sizing: border-box;
+  padding: 0 24px 0 76px;
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 76px;
+  text-align: left;
+  white-space: nowrap;
+}
+.sec .sym { position: absolute; left: 24px; top: 22px; width: 32px; height: 32px; }
+.sec .n { position: absolute; right: 24px; top: 0; font-weight: 500; font-size: 28px; }
+.sec.focus { -webkit-transform: scale(1.02); transform: scale(1.02); box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28); z-index: 2; }
+.sec-title {
+  position: absolute;
+  left: 860px;
+  top: 150px;
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.set-rows { position: absolute; left: 860px; top: 196px; width: 964px; height: 720px; overflow: hidden; }
+.set-rows .mover {
+  position: relative;
+  -webkit-transition: -webkit-transform 0.2s cubic-bezier(0.2, 0.9, 0.3, 1);
+  transition: transform 0.2s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+.srow {
+  position: relative;
+  width: 964px;
+  min-height: 84px;
+  margin-bottom: 8px;
+  border-radius: 20px;
+  box-sizing: border-box;
+  padding: 0 30px;
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 84px;
+  white-space: nowrap;
+  -webkit-transition: -webkit-transform 0.18s cubic-bezier(0.2, 0.9, 0.3, 1.15), background-color 0.13s;
+  transition: transform 0.18s cubic-bezier(0.2, 0.9, 0.3, 1.15), background-color 0.13s;
+}
+.srow .l { display: inline; }
+.srow .v { position: absolute; right: 30px; top: 0; font-weight: 500; }
+.srow .v .chev { margin: 0 10px; }
+.srow .toggle { top: 20px; }
+.srow.focus { -webkit-transform: scale(1.02); transform: scale(1.02); box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28); z-index: 2; }
+.srow.dim { opacity: 0.4; }
+.set-foot { position: absolute; left: 124px; top: 980px; font-weight: 500; }
+body:not(.night) #langpick .box,
+body:not(.night) #citypick .box,
+body:not(.night) #keypick .box,
+body:not(.night) #about .box,
+body:not(.night) #shelfedit .box {
+  background: -webkit-linear-gradient(top, rgba(255, 255, 255, 0.96), rgba(244, 244, 248, 0.98));
+  background: linear-gradient(rgba(255, 255, 255, 0.96), rgba(244, 244, 248, 0.98));
+  color: #1D1D1F;
+  box-shadow: 0 40px 90px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+body:not(.night) .box .title .sym { color: #1D1D1F; }
+body:not(.night) .box .row .value { color: #1D1D1F; }
+body:not(.night) .box .row .value .chev { color: rgba(29, 29, 31, 0.4); }
+body:not(.night) .box .row.focus { background: #1D1D1F; color: #F5F5F7; }
+body:not(.night) .box .row.focus .value,
+body:not(.night) .box .row.focus .value .chev { color: #F5F5F7; }
+body:not(.night) .box .hint { color: #6E6E73; }
+body:not(.night) #citypick .row.field input,
+body:not(.night) #keypick .row.field input { color: #1D1D1F; }
+body:not(.night) #citypick .row.field,
+body:not(.night) #keypick .row.field { box-shadow: inset 0 0 0 2px rgba(29, 29, 31, 0.16); }
 
 /* Tizen 2 and 1 GB TVs (see tv.js): no shadows or animations; their GPUs can't keep up while the focus moves. */
 .lite * { box-shadow: none !important; -webkit-transition: none !important; transition: none !important; }
