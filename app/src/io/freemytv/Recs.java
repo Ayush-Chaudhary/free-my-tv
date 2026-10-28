@@ -1080,7 +1080,9 @@ final class Recs {
     // MARK: - Watchmode (the title's own page in its app; the free plan's web addresses are what the apps open)
 
     private static String linkKey(Pick p) {
-        return "wm2:" + p.kind + p.id + p.app;   // wm2: links found before the channel check are looked up again
+        // wm3: misses saved before Wikidata was asked for Max and Prime Video's gti, or while no Watchmode key was set,
+        // are looked up again (wm2: links found before the channel check)
+        return "wm3:" + p.kind + p.id + p.app;
     }
 
     /** Links are looked up when a title is opened, not while the rows load: the free plan is 2,500 requests a month. */
@@ -1096,19 +1098,22 @@ final class Recs {
 
     /**
      * Sets p.link from a link remembered earlier, Watchmode (2 requests, under the monthly cap), or Wikidata
-     * (Netflix, Prime Video, Disney+). An empty string means "looked up, nothing": the app's home is used.
+     * (Netflix, Prime Video, Disney+, Max). An empty string means "looked up, nothing": the app's home is used.
+     * A miss without Watchmode (no key, or the month's cap reached) is saved as "-" and the day: it is tried again the
+     * next day, or as soon as Watchmode can be asked, instead of opening the app's home for good.
      */
     private void findLink(Pick p) {
         if (p.id <= 0 || p.pkg == null || p.link != null) return;
         String saved = links.getString(linkKey(p), null);
-        if (saved != null) {
-            p.link = saved.isEmpty() ? null : saved;
+        boolean wm = linksOn() && watchmodeRoom();
+        if (saved != null && !(saved.startsWith("-") && (wm || !saved.equals(missToday())))) {
+            p.link = saved.isEmpty() || saved.startsWith("-") ? null : saved;
             return;
         }
         if (System.currentTimeMillis() < linkRetryAt) return;
         String link = "";
         try {
-            if (linksOn() && watchmodeRoom()) link = watchmodeLink(p);
+            if (wm) link = watchmodeLink(p);
         } catch (Exception e) {
             if ("Watchmode returned HTTP 401".equals(e.getMessage())) {
                 cache.edit().putInt("wm:refused", Config.WATCHMODE_KEY.trim().hashCode()).apply();
@@ -1121,8 +1126,14 @@ final class Recs {
             try { link = wikidataLink(p); }
             catch (Exception e) { AppLog.w("wikidata: " + e.getMessage()); return; }
         }
-        links.edit().putString(linkKey(p), link).apply();
+        links.edit().putString(linkKey(p), link.isEmpty() && !wm ? missToday() : link).apply();
         p.link = link.isEmpty() ? null : link;
+        if (link.isEmpty()) AppLog.w("no title link for " + p.kind + ":" + p.id + " on " + p.app + (wm ? "" : " (no Watchmode key or quota)"));
+    }
+
+    /** A miss found without Watchmode, kept until the day (UTC) changes. */
+    private static String missToday() {
+        return "-" + (System.currentTimeMillis() / 86_400_000L);
     }
 
     /** Two requests per title; stop at 2,000 of the free plan's 2,500 in a calendar month. */
@@ -1156,30 +1167,53 @@ final class Recs {
         return link;
     }
 
+    /** Max's id on Wikidata as the app opens it (play.max.com/movie/<id> or /show/<id>); the old HBO Max urn: ids aren't. */
+    private static final java.util.regex.Pattern MAX_ID =
+            java.util.regex.Pattern.compile("(?:movie|show)/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+
     /**
-     * Wikidata's Netflix, Prime Video and Disney+ id for this TMDB title, as the https address those apps open.
-     * One SPARQL request, no key. Empty when Wikidata has no id.
+     * Wikidata's Netflix, Prime Video, Disney+ and Max id for this TMDB title, as the https address those apps open.
+     * Prime Video: the gti (Prime Video GTI, then Prime Video ID), else the older Amazon id. One SPARQL request, no
+     * key. Empty when Wikidata has no id.
      */
     private static String wikidataLink(Pick p) throws Exception {
-        String property = "netflix".equals(p.app) ? "P1874" : "prime".equals(p.app) ? "P8055" : "disney".equals(p.app) ? "P7595" : "";
-        if (property.isEmpty()) return "";
+        String[] properties = "netflix".equals(p.app) ? new String[] {"P1874"}
+                : "prime".equals(p.app) ? new String[] {"P14462", "P14440", "P8055"}
+                : "disney".equals(p.app) ? new String[] {"P7595"}
+                : "max".equals(p.app) ? new String[] {"P8298"} : new String[0];
+        if (properties.length == 0) return "";
         String tmdb = p.kind.equals("tv") ? "P4983" : "P4947";
-        String query = "SELECT ?id WHERE { ?item wdt:" + tmdb + " \"" + p.id + "\" . ?item wdt:" + property + " ?id } LIMIT 1";
+        StringBuilder values = new StringBuilder();
+        for (String property : properties) values.append(" wdt:").append(property);
+        String query = "SELECT ?p ?id WHERE { VALUES ?p {" + values + " } ?item wdt:" + tmdb + " \"" + p.id
+                + "\" . ?item ?p ?id } LIMIT 20";
         HttpURLConnection c = (HttpURLConnection) new URL("https://query.wikidata.org/sparql?format=json&query="
                 + URLEncoder.encode(query, "UTF-8")).openConnection();
         c.setConnectTimeout(8000);
         c.setReadTimeout(10000);
         c.setRequestProperty("Accept", "application/sparql-results+json");
         c.setRequestProperty("User-Agent", "FreeMyTV/1.0 (https://freemytv.io)");
-        String id;
+        String id = "";
         try {
             if (c.getResponseCode() != 200) return "";
             JSONArray bindings = new JSONObject(read(c.getInputStream())).getJSONObject("results").getJSONArray("bindings");
-            if (bindings.length() == 0) return "";
-            id = bindings.getJSONObject(0).getJSONObject("id").optString("value");
+            int best = properties.length;
+            for (int i = 0; i < bindings.length(); i++) {
+                JSONObject b = bindings.getJSONObject(i);
+                String property = b.getJSONObject("p").optString("value");
+                String value = b.getJSONObject("id").optString("value");
+                if ("max".equals(p.app) && !MAX_ID.matcher(value).matches()) continue;
+                for (int r = 0; r < best; r++) {
+                    if (property.endsWith("/" + properties[r])) {
+                        best = r;
+                        id = value;
+                    }
+                }
+            }
         } finally {
             c.disconnect();
         }
+        if ("max".equals(p.app)) return id.isEmpty() ? "" : "https://play.max.com/" + id;
         if (id.isEmpty() || id.indexOf('/') >= 0 || id.indexOf('?') >= 0) return "";
         if ("netflix".equals(p.app)) return "https://www.netflix.com/title/" + id;
         if ("prime".equals(p.app)) return "https://app.primevideo.com/detail?gti=" + id;
