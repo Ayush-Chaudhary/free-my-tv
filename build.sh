@@ -96,8 +96,11 @@ EOF
 # title page). Every other build keeps the service to key events only.
 rm -rf out/res && mkdir -p out && cp -a app/res out/res
 if $KEEP_GOOGLE; then
-  sed -i 's/canRequestFilterKeyEvents="true"/canRequestFilterKeyEvents="true" android:canRetrieveWindowContent="true"/' \
-    out/res/xml/remote_key_service.xml
+  # BSD sed treats -i as a backup suffix, and a .bak left in res/ breaks aapt2. Write beside the tree, then move.
+  xml_tmp="$(mktemp "${TMPDIR:-/tmp}/remote_key_service.XXXXXX")"
+  sed 's/canRequestFilterKeyEvents="true"/canRequestFilterKeyEvents="true" android:canRetrieveWindowContent="true"/' \
+    out/res/xml/remote_key_service.xml > "$xml_tmp"
+  mv "$xml_tmp" out/res/xml/remote_key_service.xml
 fi
 
 # --- Build
