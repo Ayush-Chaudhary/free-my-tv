@@ -14,6 +14,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.speech.RecognizerIntent;
 import android.text.Editable;
 import android.text.InputType;
@@ -51,6 +52,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class SearchActivity extends Activity {
     static final String EXTRA_VOICE = "voice";
+
+    /** Opens this screen and starts listening. Safe from the key process (its own task). */
+    static void startVoice(android.content.Context c) {
+        c.startActivity(new Intent(c, SearchActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra(EXTRA_VOICE, true));
+    }
     static final String EXTRA_QUERY = "query";
     static final String EXTRA_NOTE = "note";
     private static final int VOICE = 1;
@@ -72,6 +78,7 @@ public class SearchActivity extends Activity {
     private int generation;
     private boolean focusResults;
     private String note = "";
+    private long listenedAt;
     private final Runnable typed = () -> run(field.getText().toString(), false);
 
     @Override protected void onCreate(Bundle saved) {
@@ -117,7 +124,7 @@ public class SearchActivity extends Activity {
     }
 
     @Override public boolean onKeyDown(int keyCode, KeyEvent event) {
-        if (keyCode == KeyEvent.KEYCODE_SEARCH) {
+        if (RemoteKeys.voiceKey(keyCode)) {
             listen();
             return true;
         }
@@ -242,15 +249,27 @@ public class SearchActivity extends Activity {
         ((View) appsRow.getParent()).setVisibility(appsOn ? View.VISIBLE : View.GONE);
     }
 
+    /** The TV's speech recognizer (Google's, when it's there). No recognizer: the field stays so they can type. */
     private void listen() {
+        long now = SystemClock.uptimeMillis();
+        if (now - listenedAt < 800) return;
+        PackageManager pm = getPackageManager();
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
                 .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
                 .putExtra(RecognizerIntent.EXTRA_PROMPT, Ui.tr("Search movies, shows and apps"));
         Intent google = new Intent(intent).setPackage(KATNISS);
-        if (google.resolveActivity(getPackageManager()) != null) intent = google;
+        if (google.resolveActivity(pm) != null) intent = google;
+        else if (intent.resolveActivity(pm) == null) {
+            status.setText(Ui.tr("Voice search isn't on this TV."));
+            field.requestFocus();
+            return;
+        }
         try {
             startActivityForResult(intent, VOICE);
-        } catch (ActivityNotFoundException e) {
+            listenedAt = now;
+        } catch (ActivityNotFoundException | SecurityException e) {
+            AppLog.w("voice search: " + e.getMessage());
+            status.setText(Ui.tr("Voice search isn't on this TV."));
             field.requestFocus();
         }
     }
@@ -436,15 +455,7 @@ public class SearchActivity extends Activity {
         if (p.pkg == null) frame.setAlpha(0.45f);
         focusable(card, frame, px(400));
         card.setOnClickListener(v -> openTitle(p, frame));
-        String url = Recs.smallImage(p);
-        Bitmap cached = images.get(url);
-        if (cached != null) image.setImageBitmap(cached);
-        else io.execute(() -> {
-            Bitmap b = download(url);
-            if (b == null) return;
-            images.put(url, b);
-            handler.post(() -> { if (!isDestroyed()) image.setImageBitmap(b); });
-        });
+        loadPhoto(image, Recs.smallImage(p), Recs.posterImage(p));
         return card;
     }
 
@@ -471,7 +482,14 @@ public class SearchActivity extends Activity {
                 o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), px(14));
             }
         });
-        frame.setClipToOutline(true);
+        // Clip only once the card has a size. An empty outline (applied before layout) draws nothing, so the photo
+        // never appears. Rounded corners stay.
+        frame.setClipToOutline(false);
+        frame.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> {
+            boolean sized = r - l > 0 && b - t > 0;
+            if (v.getClipToOutline() != sized) v.setClipToOutline(sized);
+            v.invalidateOutline();
+        });
         GradientDrawable ring = new GradientDrawable();
         ring.setCornerRadius(px(14));
         ring.setStroke(px(4), INK);
@@ -562,25 +580,63 @@ public class SearchActivity extends Activity {
         }
     }
 
+    /** Backdrop first, then the poster. Failures go to logcat (`adb logcat -s FreeMyTV` and look for `search image`). */
+    private void loadPhoto(ImageView image, String url, String fallback) {
+        Bitmap cached = url.isEmpty() ? null : images.get(url);
+        if (cached != null) {
+            image.setImageBitmap(cached);
+            return;
+        }
+        io.execute(() -> {
+            Bitmap b = download(url);
+            String used = url;
+            if (b == null && fallback != null && !fallback.isEmpty() && !fallback.equals(url)) {
+                b = download(fallback);
+                used = fallback;
+            }
+            if (b == null) {
+                AppLog.w("search image: no picture" + (url.isEmpty() ? "" : " for " + url));
+                return;
+            }
+            AppLog.w("search image: " + b.getWidth() + "x" + b.getHeight());
+            images.put(used, b);
+            Bitmap show = b;
+            handler.post(() -> { if (!isDestroyed()) image.setImageBitmap(show); });
+        });
+    }
+
+    /**
+     * Same read as the home screen's photos: the body, not the status line first. Checking the status before the body
+     * came back empty on some TVs, the decode then returned nothing, and the miss was thrown away.
+     */
     private Bitmap download(String url) {
+        if (url == null || url.isEmpty()) return null;
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL(url).openConnection();
             c.setConnectTimeout(8000);
             c.setReadTimeout(15000);
             c.setInstanceFollowRedirects(true);
-            if (c.getResponseCode() != 200) return null;
+            byte[] bytes;
             try (InputStream in = c.getInputStream()) {
-                BitmapFactory.Options bounds = new BitmapFactory.Options();
-                bounds.inJustDecodeBounds = true;
-                byte[] bytes = readBytes(in);
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
-                BitmapFactory.Options o = new BitmapFactory.Options();
-                o.inSampleSize = 1;
-                while (bounds.outWidth / o.inSampleSize > 800) o.inSampleSize *= 2;
-                return BitmapFactory.decodeByteArray(bytes, 0, bytes.length, o);
+                bytes = readBytes(in);
             }
+            if (bytes.length == 0) {
+                AppLog.w("search image: empty response");
+                return null;
+            }
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.length, bounds);
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            int sample = 1;
+            while (bounds.outWidth / sample > 800 && sample < 16) sample *= 2;
+            o.inSampleSize = sample;
+            Bitmap b = BitmapFactory.decodeByteArray(bytes, 0, bytes.length, o);
+            if (b == null) AppLog.w("search image: undecodable " + bytes.length + " bytes");
+            return b;
         } catch (Exception e) {
+            AppLog.w("search image: " + (e.getMessage() == null ? e.toString() : e.getMessage()));
             return null;
         } finally {
             if (c != null) c.disconnect();

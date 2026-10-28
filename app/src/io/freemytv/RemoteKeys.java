@@ -62,6 +62,14 @@ final class RemoteKeys {
     }
 
     /**
+     * The remote's mic / Assistant button. TCL's Google TV remote sends one of these (no separate vendor code in the
+     * maps we have): search 84, assist 219, voice assist 231.
+     */
+    static boolean voiceKey(int code) {
+        return code == KeyEvent.KEYCODE_SEARCH || code == KeyEvent.KEYCODE_ASSIST || code == KeyEvent.KEYCODE_VOICE_ASSIST;
+    }
+
+    /**
      * Google TV's home stays on only where this service runs and can take the Home key back. Elsewhere the switch
      * turns that home off as usual, even if keep_google_home is set.
      */

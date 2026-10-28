@@ -440,9 +440,26 @@ final class Recs {
         findLink(p);
     }
 
-    /** A title's photo at a small size (search results). */
+    /** A title's wide photo for search (backdrop, or the poster when the wide one is missing). */
     static String smallImage(Pick p) {
-        return p == null || p.backdrop == null ? "" : "https://image.tmdb.org/t/p/w780" + p.backdrop;
+        if (p == null) return "";
+        String path = imagePath(p.backdrop);
+        if (path.isEmpty()) path = imagePath(p.poster);
+        return path.isEmpty() ? "" : "https://image.tmdb.org/t/p/w780" + path;
+    }
+
+    /** The portrait, when the wide photo failed to load. */
+    static String posterImage(Pick p) {
+        if (p == null) return "";
+        String path = imagePath(p.poster);
+        return path.isEmpty() ? "" : "https://image.tmdb.org/t/p/w500" + path;
+    }
+
+    private static String imagePath(String path) {
+        if (path == null) return "";
+        path = path.trim();
+        if (path.isEmpty() || "null".equals(path)) return "";
+        return path.charAt(0) == '/' ? path : "/" + path;
     }
 
     /** The pick's ready backdrop (or null: builds it in the background and notifies when it's ready). */

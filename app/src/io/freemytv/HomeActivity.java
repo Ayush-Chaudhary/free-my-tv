@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -22,6 +23,7 @@ public class HomeActivity extends Activity {
     static final String EXTRA_SEARCH = "io.freemytv.SEARCH";
     private HomeView home;
     private int prefsVersion = Prefs.version;   // settings changed while we were away: start over
+    private long voiceAt;
 
     @Override protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -96,10 +98,34 @@ public class HomeActivity extends Activity {
         if (level >= TRIM_MEMORY_COMPLETE) Recs.get(this).trim();
     }
 
+    /** The framework's search key (KEYCODE_SEARCH), when it doesn't arrive as a normal key. */
+    @Override public boolean onSearchRequested() {
+        openVoiceSearch();
+        return true;
+    }
+
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (voiceKey(event)) return true;
         if (RemoteKeys.onKey(this, event)) return true;
         if (home != null && home.onKey(event)) return true;
         return super.dispatchKeyEvent(event);
+    }
+
+    /**
+     * Mic button while this screen is in front (the key service takes it first when that service is on). A tap opens
+     * search and listens. With keep_google_home the service handles the key, and a long press there is Google Assistant.
+     */
+    private boolean voiceKey(KeyEvent e) {
+        if (home == null || !RemoteKeys.voiceKey(e.getKeyCode())) return false;
+        if (e.getAction() == KeyEvent.ACTION_DOWN && e.getRepeatCount() == 0) openVoiceSearch();
+        return true;
+    }
+
+    private void openVoiceSearch() {
+        long now = SystemClock.uptimeMillis();
+        if (now - voiceAt < 600) return;
+        voiceAt = now;
+        SearchActivity.startVoice(this);
     }
 
 }

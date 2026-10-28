@@ -39,13 +39,45 @@ public class RemoteKeyService extends AccessibilityService {
 
     private int watching;
     private long watchUntil, googlePageAt;
+    /** A held mic button, so the release doesn't also open our search. */
+    private boolean voiceHeld;
     /** What was last asked of Google Assistant, kept only until the title page fails or the watch ends. */
     private String asked = "";
     private final Handler handler = new Handler(Looper.getMainLooper());
 
     @Override protected boolean onKeyEvent(KeyEvent event) {
+        if (voiceKey(event)) return true;
         if (homeKey(event)) return true;
         return RemoteKeys.onKey(this, event);
+    }
+
+    /**
+     * Mic button while Free My TV holds Home (the same gate as the Home-key takeover). A tap opens our search and
+     * starts listening. With keep_google_home, a long press still opens Google Assistant.
+     */
+    private boolean voiceKey(KeyEvent e) {
+        if (!RemoteKeys.voiceKey(e.getKeyCode()) || !ourHome()) return false;
+        if (e.getAction() == KeyEvent.ACTION_DOWN) {
+            if (e.getRepeatCount() == 0) voiceHeld = false;
+            if (RemoteKeys.keepGoogleHome() && e.isLongPress() && !voiceHeld) {
+                voiceHeld = true;
+                launchAssistant();
+            }
+            return true;
+        }
+        if (e.getAction() == KeyEvent.ACTION_UP && !e.isCanceled() && !voiceHeld) SearchActivity.startVoice(this);
+        return true;
+    }
+
+    /** Google Assistant, when keep_google_home left it installed. If it isn't there, our search instead. */
+    private void launchAssistant() {
+        try {
+            startActivity(new Intent(Intent.ACTION_ASSIST).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    .setPackage(ASSISTANT_PACKAGE));
+        } catch (RuntimeException e) {
+            AppLog.w("assistant: " + e.getMessage());
+            SearchActivity.startVoice(this);
+        }
     }
 
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
