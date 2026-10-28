@@ -5,12 +5,14 @@
 <meta name="viewport" content="width=1920, height=1080">
 <title>Free My TV</title>
 <link rel="stylesheet" href="home.css">
+<link rel="stylesheet" href="tokens.css">
 </head>
 <body>
 <script>
-  // The look the home screen last had, before anything is drawn, so a night start doesn't flash the day one first.
+  // Dark unless Home Settings is Light, before anything is drawn, so the first frame matches the theme.
   try {
-    if (localStorage.getItem('fmtv.night') === 'true') {
+    var prefs = JSON.parse(localStorage.getItem('fmtv.prefs') || '{}');
+    if (prefs.theme !== 'light') {
       document.documentElement.style.background = '#0B0B0D';
       document.body.className = 'night';
     }
@@ -31,7 +33,14 @@
       <div id="tabs"></div>
       <div id="quotes"></div>
       <div id="buttons"></div>
-      <div id="cards"></div>
+      <div id="hclock"><span class="time"></span><small class="wx"></small></div>
+      <div id="rowview">
+        <div id="rowhead">
+          <h2 id="rowname" class="rowname"></h2>
+          <div id="rownext" class="rownext"></div>
+        </div>
+        <div id="cards"></div>
+      </div>
       <div id="clock"><span class="time"></span><span class="date"></span></div>
     </div>
     <div id="platter"></div>
@@ -45,6 +54,11 @@
   <div id="citypick" class="layer sheet"><div class="box"></div></div>
   <div id="keypick" class="layer sheet"><div class="box"></div></div>
   <div id="about" class="layer sheet"><div class="box"></div></div>
+  <div id="search" class="layer">
+    <div id="field" class="field glass"></div>
+    <div id="kb"></div>
+    <div id="searchpane"></div>
+  </div>
   <div id="saver" class="layer"></div>
   <div id="toast"></div>
 </div>
@@ -55,6 +69,7 @@
 <script src="tv.js"></script>
 <script src="zones.js"></script>
 <script src="data.js"></script>
+<script src="tokens.js"></script>
 <script src="home.js"></script>
 </body>
 </html>

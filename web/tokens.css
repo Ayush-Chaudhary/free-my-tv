@@ -1,0 +1,72 @@
+/* Generated from web/tokens.json by tools/make_tokens.py. Do not edit.
+   Literal colors: webOS 3 / Tizen 2 have no CSS custom properties. */
+.numeral { color: #D2D2D7; }
+.night .numeral { color: rgba(245,245,247,0.16); }
+.numeral.on { color: #1D1D1F; }
+.night .numeral.on { color: #F5F5F7; }
+
+.rowname { color: #1D1D1F; font-size: 32px; font-weight: 600; }
+.rowname .count { color: #8E8E93; font-weight: 500; }
+.night .rowname { color: #F5F5F7; }
+.night .rowname .count { color: rgba(245,245,247,0.50); }
+.rowname.dim { color: #6E6E73; }
+.night .rowname.dim { color: rgba(245,245,247,0.68); }
+.rownext { color: #6E6E73; font-size: 28px; font-weight: 500; }
+.night .rownext { color: rgba(245,245,247,0.68); }
+.rownext .prev { color: #8E8E93; }
+.night .rownext .prev { color: rgba(245,245,247,0.50); }
+
+#hclock { color: #1D1D1F; font-size: 40px; font-weight: 500; }
+#hclock small { color: #6E6E73; font-size: 28px; font-weight: 500; }
+.night #hclock { color: #F5F5F7; }
+.night #hclock small { color: rgba(245,245,247,0.68); }
+
+.card .name { font-size: 32px; }
+.card .meta { color: #6E6E73; font-size: 28px; }
+.night .card .meta { color: rgba(245,245,247,0.68); }
+
+.card.focus::before { border-color: #FFFFFF; outline-color: rgba(0,0,0,0.16); }
+.night .card.focus::before { outline-color: rgba(0,0,0,0.5); }
+.card.focus .img { box-shadow: 0 24px 46px rgba(0,0,0,0.34); }
+
+.k { color: #1D1D1F; background: rgba(255,255,255,0.66); }
+.night .k { color: #F5F5F7; background: rgba(255, 255, 255, 0.07); }
+.k.focus { background: #FFFFFF; color: #1D1D1F; }
+
+.set-h { color: #1D1D1F; font-size: 44px; }
+.night .set-h { color: #F5F5F7; }
+.set-h small { color: #6E6E73; font-size: 28px; }
+.night .set-h small { color: rgba(245,245,247,0.68); }
+.sec { color: #6E6E73; }
+.night .sec { color: rgba(245,245,247,0.68); }
+.sec .n { color: #8E8E93; }
+.night .sec .n { color: rgba(245,245,247,0.50); }
+.sec.on { background: rgba(29, 29, 31, 0.06); color: #1D1D1F; }
+.night .sec.on { background: rgba(255, 255, 255, 0.12); color: #F5F5F7; }
+.sec.focus { background: #FFFFFF; color: #1D1D1F; }
+.sec.focus .n { color: rgba(29, 29, 31, 0.55); }
+.sec-title { color: #8E8E93; font-size: 28px; }
+.night .sec-title { color: rgba(245,245,247,0.50); }
+.srow { color: #1D1D1F; }
+.night .srow { color: #F5F5F7; }
+.srow .d, .srow .v { color: #6E6E73; }
+.night .srow .d, .night .srow .v { color: rgba(245,245,247,0.68); }
+.srow .v .chev { color: #8E8E93; }
+.night .srow .v .chev { color: rgba(245,245,247,0.50); }
+.srow.focus { background: #FFFFFF; color: #1D1D1F; }
+.srow.focus .d, .srow.focus .v { color: rgba(29, 29, 31, 0.7); }
+.srow.focus .v .chev { color: rgba(29, 29, 31, 0.4); }
+.srow .tog.on { background: #3FD69B; }
+.set-foot { color: #8E8E93; font-size: 28px; }
+.night .set-foot { color: rgba(245,245,247,0.50); }
+
+.set-bg {
+  background: #F5F5F7;
+  background: -webkit-linear-gradient(top, #F5F5F7, #E2E2E7);
+  background: linear-gradient(#F5F5F7, #E2E2E7);
+}
+.night .set-bg {
+  background: #0B0B0D;
+  background: -webkit-radial-gradient(15% 20%, circle, rgba(64, 72, 140, 0.45), rgba(0, 0, 0, 0) 70%), -webkit-radial-gradient(85% 90%, circle, rgba(30, 110, 120, 0.35), rgba(0, 0, 0, 0) 70%), -webkit-linear-gradient(top, #121318, #0B0B0D);
+  background: radial-gradient(circle at 15% 20%, rgba(64, 72, 140, 0.45), rgba(0, 0, 0, 0) 70%), radial-gradient(circle at 85% 90%, rgba(30, 110, 120, 0.35), rgba(0, 0, 0, 0) 70%), linear-gradient(#121318, #0B0B0D);
+}
