@@ -52,6 +52,8 @@ final class SearchCanvas extends View {
     private final List<String> posters = new ArrayList<>();
     private final List<Hit> hits = new ArrayList<>();
     private final RectF tmp = new RectF();
+    /** Voice control beside the field. Empty unless the mic glyph loaded, so a missing picture is not an empty circle. */
+    private final RectF voice = new RectF();
     private final Spring spring = new Spring(0.22f, 0.82f, 1);
     private Paint ink, dim, keyText, title, meta, plate, fill, artText, fieldPaint, imageFill;
     private final Recs.Listener imagesReady = new Recs.Listener() {
@@ -259,6 +261,7 @@ final class SearchCanvas extends View {
         title.setColor(Tokens.ink(night));
         meta.setColor(Tokens.inkSecondary(night));
         fieldPaint.setColor(Tokens.ink(night));
+        layoutVoice();
         drawField(c);
         boolean dimKb = listening || !hits.isEmpty() || !reply.isEmpty();
         if (dimKb) c.saveLayerAlpha(0, 0, w, h, 82);
@@ -273,9 +276,27 @@ final class SearchCanvas extends View {
         else drawResults(c);
     }
 
+    /** The voice pill's place. Nothing is reserved when the mic picture or its label is missing. */
+    private void layoutVoice() {
+        voice.setEmpty();
+        if (k == 0 || dim == null || Symbols.get(getContext(), "mic") == null) return;
+        String label = Ui.tr("Search by voice");
+        if (label.isEmpty()) return;
+        float saved = dim.getTextSize();
+        dim.setTextSize(28 * k);
+        float icon = 36 * k, gap = 12 * k, pad = 28 * k;
+        float tw = Math.min(dim.measureText(label), 420 * k);
+        float bw = pad + icon + gap + tw + pad;
+        float top = 72 * k, bh = 100 * k;
+        float right = w - 80 * k;
+        voice.set(right - bw, top, right, top + bh);
+        dim.setTextSize(saved);
+    }
+
     private void drawField(Canvas c) {
         float top = 72 * k;
-        tmp.set(80 * k, top, 80 * k + 1636 * k, top + 100 * k);
+        float right = voice.width() > 0 ? voice.left - 20 * k : w - 80 * k;
+        tmp.set(80 * k, top, right, top + 100 * k);
         plate.setStyle(Paint.Style.FILL);
         plate.setColor(Tokens.glassTop(night));
         c.drawRoundRect(tmp, 50 * k, 50 * k, plate);
@@ -300,12 +321,31 @@ final class SearchCanvas extends View {
         }
     }
 
+    /**
+     * Voice control: mic picture and "Search by voice" together, or nothing.
+     * A circle drawn first used to stay on screen when symbols/mic.png failed to load.
+     */
     private void drawMic(Canvas c, boolean on) {
-        float cx = 1790 * k, cy = 122 * k, r = 50 * k;
+        if (voice.width() <= 0 || Symbols.get(getContext(), "mic") == null) return;
         plate.setStyle(Paint.Style.FILL);
         plate.setColor(on ? 0xFFFFFFFF : Tokens.glassTop(night));
-        c.drawCircle(cx, cy, r, plate);
-        Symbols.draw(getContext(), c, "mic", cx, cy, 40 * k, on ? Tokens.INK_LIGHT : Tokens.ink(night));
+        c.drawRoundRect(voice, voice.height() / 2f, voice.height() / 2f, plate);
+        int color = on ? Tokens.INK_LIGHT : Tokens.ink(night);
+        float icon = 36 * k;
+        float cx = voice.left + 28 * k + icon / 2f;
+        Symbols.draw(getContext(), c, "mic", cx, voice.centerY(), icon, color);
+        String label = Ui.tr("Search by voice");
+        float savedSize = dim.getTextSize();
+        int savedColor = dim.getColor();
+        dim.setTextSize(28 * k);
+        dim.setColor(color);
+        float textLeft = cx + icon / 2f + 12 * k;
+        float maxText = voice.right - 28 * k - textLeft;
+        String shown = TextUtils.ellipsize(label, new android.text.TextPaint(dim), Math.max(1, maxText),
+                TextUtils.TruncateAt.END).toString();
+        c.drawText(shown, textLeft, voice.centerY() + Ui.halfCap(dim), dim);
+        dim.setTextSize(savedSize);
+        dim.setColor(savedColor);
     }
 
     private void drawOrb(Canvas c, long now) {
@@ -333,24 +373,26 @@ final class SearchCanvas extends View {
     private void drawIdle(Canvas c) {
         float x0 = 800 * k;
         dim.setColor(Tokens.inkSecondary(night));
-        c.drawText(Ui.tr("Recent"), x0, 248 * k, dim);
-        float x = x0;
-        for (int i = 0; i < chips.size(); i++) {
-            boolean on = zone == CHIP && i == index;
-            float icon = 28 * k;
-            float tw = dim.measureText(chips.get(i));
-            float wChip = tw + icon + 36 * k + 48 * k;
-            tmp.set(x, 278 * k, x + wChip, 278 * k + 76 * k);
-            plate.setColor(on ? 0xFFFFFFFF : Tokens.glassTop(night));
-            c.drawRoundRect(tmp, 38 * k, 38 * k, plate);
-            int color = on ? Tokens.INK_LIGHT : Tokens.inkSecondary(night);
-            Symbols.draw(getContext(), c, "sync", tmp.left + 28 * k + icon / 2, tmp.centerY(), icon, color);
-            Paint p = on ? ink : dim;
-            int was = p.getColor();
-            p.setColor(on ? Tokens.INK_LIGHT : Tokens.ink(night));
-            c.drawText(chips.get(i), tmp.left + 28 * k + icon + 12 * k, tmp.centerY() + Ui.halfCap(p), p);
-            p.setColor(was);
-            x = tmp.right + 16 * k;
+        if (recentButtons()) {
+            c.drawText(Ui.tr("Recent"), x0, 248 * k, dim);
+            float x = x0;
+            for (int i = 0; i < chips.size(); i++) {
+                boolean on = zone == CHIP && i == index;
+                float icon = 28 * k;
+                float tw = dim.measureText(chips.get(i));
+                float wChip = tw + icon + 36 * k + 48 * k;
+                tmp.set(x, 278 * k, x + wChip, 278 * k + 76 * k);
+                plate.setColor(on ? 0xFFFFFFFF : Tokens.glassTop(night));
+                c.drawRoundRect(tmp, 38 * k, 38 * k, plate);
+                int color = on ? Tokens.INK_LIGHT : Tokens.inkSecondary(night);
+                Symbols.draw(getContext(), c, "sync", tmp.left + 28 * k + icon / 2, tmp.centerY(), icon, color);
+                Paint p = on ? ink : dim;
+                int was = p.getColor();
+                p.setColor(on ? Tokens.INK_LIGHT : Tokens.ink(night));
+                c.drawText(chips.get(i), tmp.left + 28 * k + icon + 12 * k, tmp.centerY() + Ui.halfCap(p), p);
+                p.setColor(was);
+                x = tmp.right + 16 * k;
+            }
         }
         if (!posters.isEmpty()) {
             c.drawText(Ui.tr("Popular on your apps"), x0, 448 * k, dim);
@@ -361,8 +403,12 @@ final class SearchCanvas extends View {
             }
         }
         float hy = 900 * k;
-        Symbols.draw(getContext(), c, "mic", x0 + 15 * k, hy - 8 * k, 30 * k, Tokens.inkSecondary(night));
-        c.drawText(Ui.tr("Or hold the remote's mic: “funny shows for tonight”"), x0 + 44 * k, hy, dim);
+        float hintX = x0;
+        if (Symbols.get(getContext(), "mic") != null) {
+            Symbols.draw(getContext(), c, "mic", x0 + 15 * k, hy - 8 * k, 30 * k, Tokens.inkSecondary(night));
+            hintX = x0 + 44 * k;
+        }
+        c.drawText(Ui.tr("Or hold the remote's mic: “funny shows for tonight”"), hintX, hy, dim);
     }
 
     private void drawResults(Canvas c) {
@@ -450,8 +496,13 @@ final class SearchCanvas extends View {
                 x0, 430 * k, title);
         title.setTextSize(Tokens.TYPE_ROWTITLE * k);
         if (headline.equals(no)) c.drawText(Ui.tr("Check the spelling, or try a title, an actor or an app."), x0, 490 * k, dim);
-        drawAction(c, Ui.tr("Ask Google Assistant"), x0, 540 * k, zone == ACTION && index == 0);
-        drawAction(c, Ui.tr("Clear search"), x0 + 480 * k, 540 * k, zone == ACTION && index == 1);
+        float ax = x0;
+        int n = 0;
+        if (askShown()) {
+            float used = drawAction(c, "sparkles", Ui.tr("Ask Google Assistant"), ax, 540 * k, zone == ACTION && index == n);
+            if (used > 0) { ax += used + 16 * k; n++; }
+        }
+        drawAction(c, null, Ui.tr("Clear search"), ax, 540 * k, zone == ACTION && index == n);
         dim.setColor(Tokens.inkSecondary(night));
         c.drawText(Ui.tr("Assistant can answer things like “what's on tonight” or “turn up the volume”."), x0, 680 * k, dim);
     }
@@ -562,12 +613,15 @@ final class SearchCanvas extends View {
             keyText.setColor(color);
             float tw = keyText.measureText(label);
             float icon = 28 * k;
-            float start = cx - (icon + 8 * k + tw) / 2;
-            c.save();
-            c.scale(-1, 1, start + icon / 2, cy);
-            Symbols.draw(getContext(), c, "chevron_right", start + icon / 2, cy, icon, color);
-            c.restore();
-            c.drawText(label, start + icon + 8 * k + tw / 2, cy + Ui.halfCap(keyText), keyText);
+            boolean glyph = Symbols.get(getContext(), "chevron_right") != null;
+            float start = glyph ? cx - (icon + 8 * k + tw) / 2 : cx - tw / 2;
+            if (glyph) {
+                c.save();
+                c.scale(-1, 1, start + icon / 2, cy);
+                Symbols.draw(getContext(), c, "chevron_right", start + icon / 2, cy, icon, color);
+                c.restore();
+            }
+            c.drawText(label, (glyph ? start + icon + 8 * k : start) + tw / 2, cy + Ui.halfCap(keyText), keyText);
             return;
         }
         String label = key.action == Key.SPACE ? Ui.tr("space") : key.action == Key.CLEAR ? Ui.tr("clear") : key.label;
@@ -576,17 +630,68 @@ final class SearchCanvas extends View {
         c.drawText(label, cx, cy + Ui.halfCap(keyText), keyText);
     }
 
-    private void drawAction(Canvas c, String label, float x, float y, boolean focused) {
+    /**
+     * A button with a picture and a label. `icon` null draws a cross (Clear search has no symbol file).
+     * Returns the width used, or 0 when the picture or the words are missing: nothing is drawn then.
+     */
+    private float drawAction(Canvas c, String icon, String label, float x, float y, boolean focused) {
+        if (label == null || label.isEmpty()) return 0;
+        boolean cross = icon == null;
+        if (!cross && Symbols.get(getContext(), icon) == null) return 0;
+        float iconSize = 28 * k;
+        float savedSize = dim.getTextSize();
+        int savedColor = dim.getColor();
         dim.setTextSize(30 * k);
-        float tw = dim.measureText(label) + 72 * k;
-        tmp.set(x, y, x + tw, y + 76 * k);
+        float maxText = 520 * k;
+        String shown = TextUtils.ellipsize(label, new android.text.TextPaint(dim), maxText, TextUtils.TruncateAt.END).toString();
+        if (shown.isEmpty()) {
+            dim.setTextSize(savedSize);
+            return 0;
+        }
+        float tw = dim.measureText(shown);
+        float wChip = 28 * k + iconSize + 12 * k + tw + 36 * k;
+        tmp.set(x, y, x + wChip, y + 76 * k);
+        plate.setStyle(Paint.Style.FILL);
         plate.setColor(focused ? 0xFFFFFFFF : Tokens.glassTop(night));
         c.drawRoundRect(tmp, 38 * k, 38 * k, plate);
-        dim.setTextSize(30 * k);
-        dim.setColor(focused ? Tokens.INK_LIGHT : Tokens.ink(night));
-        c.drawText(label, tmp.left + 36 * k, tmp.centerY() + Ui.halfCap(dim), dim);
-        dim.setColor(Tokens.inkSecondary(night));
-        dim.setTextSize(Tokens.TYPE_CAPTION * k);
+        int color = focused ? Tokens.INK_LIGHT : Tokens.ink(night);
+        float icx = tmp.left + 28 * k + iconSize / 2f;
+        if (cross) drawCross(c, icx, tmp.centerY(), iconSize, color);
+        else Symbols.draw(getContext(), c, icon, icx, tmp.centerY(), iconSize, color);
+        dim.setColor(color);
+        c.drawText(shown, tmp.left + 28 * k + iconSize + 12 * k, tmp.centerY() + Ui.halfCap(dim), dim);
+        dim.setColor(savedColor);
+        dim.setTextSize(savedSize);
+        return wChip;
+    }
+
+    private void drawCross(Canvas c, float cx, float cy, float size, int color) {
+        plate.setStyle(Paint.Style.STROKE);
+        plate.setStrokeWidth(Math.max(2f, size * 0.14f));
+        plate.setStrokeCap(Paint.Cap.ROUND);
+        plate.setColor(color);
+        float d = size * 0.34f;
+        c.drawLine(cx - d, cy - d, cx + d, cy + d, plate);
+        c.drawLine(cx + d, cy - d, cx - d, cy + d, plate);
+        plate.setStrokeCap(Paint.Cap.BUTT);
+        plate.setStyle(Paint.Style.FILL);
+    }
+
+    private boolean askShown() {
+        return Symbols.get(getContext(), "sparkles") != null;
+    }
+
+    /** Recent searches are buttons only when the sync picture can sit beside the title. */
+    private boolean recentButtons() {
+        return !chips.isEmpty() && Symbols.get(getContext(), "sync") != null;
+    }
+
+    private int actionCount() {
+        return (askShown() ? 1 : 0) + 1;
+    }
+
+    private boolean voiceShown() {
+        return voice.width() > 0 && Symbols.get(getContext(), "mic") != null;
     }
 
     boolean onKey(KeyEvent e) {
@@ -625,9 +730,11 @@ final class SearchCanvas extends View {
     private void move(int dx, int dy) {
         spring.snap(0);
         spring.target = 1;
+        layoutVoice();
         int mic = keys.size();
+        if (zone == KEY && index == mic && !voiceShown()) index = 0;
         if (zone == KEY) {
-            if (index == mic) {
+            if (index == mic && voiceShown()) {
                 if (dy > 0) index = 0;
             } else if (index < LETTERS.length()) {
                 int col = index % 6, row = index / 6;
@@ -635,7 +742,7 @@ final class SearchCanvas extends View {
                     int nc = col + dx;
                     if (nc >= 0 && nc < 6) index = row * 6 + nc;
                 }
-                if (dy < 0) index = row == 0 ? mic : (row - 1) * 6 + col;
+                if (dy < 0) index = row == 0 ? (voiceShown() ? mic : index) : (row - 1) * 6 + col;
                 if (dy > 0) {
                     if (row < 5) index = (row + 1) * 6 + col;
                     else index = LETTERS.length() + (col < 2 ? 0 : col < 5 ? 1 : 2);
@@ -648,27 +755,28 @@ final class SearchCanvas extends View {
                 if (dy > 0) goDown();
             }
         } else if (zone == CHIP) {
-            if (dy < 0) { zone = KEY; index = LETTERS.length(); }
+            if (!recentButtons()) { zone = KEY; index = 0; }
+            else if (dy < 0) { zone = KEY; index = LETTERS.length(); }
             else if (dx != 0) index = Math.max(0, Math.min(chips.size() - 1, index + dx));
         } else if (zone == RESULT) {
             if (dy < 0) { zone = KEY; index = 0; }
             else if (dx != 0) index = Math.max(0, Math.min(hits.size() - 1, index + dx));
         } else {
             if (dy < 0) { zone = KEY; index = LETTERS.length() + 1; }
-            else if (dx > 0) index = 1;
-            else if (dx < 0) index = 0;
+            else if (dx > 0) index = Math.min(actionCount() - 1, index + 1);
+            else if (dx < 0) index = Math.max(0, index - 1);
         }
         invalidate();
     }
 
     private void goDown() {
-        if (query.isEmpty() && !chips.isEmpty()) { zone = CHIP; index = 0; }
+        if (query.isEmpty() && recentButtons()) { zone = CHIP; index = 0; }
         else if (!hits.isEmpty()) { zone = RESULT; index = 0; }
         else if (!query.isEmpty()) { zone = ACTION; index = 0; }
     }
 
     private void activate() {
-        if (zone == KEY && index == keys.size()) host.listen();
+        if (zone == KEY && index == keys.size() && voiceShown()) host.listen();
         else if (zone == KEY && index < keys.size()) {
             Key key = keys.get(index);
             if (key.action == Key.CHAR) type(key.label);
@@ -683,7 +791,7 @@ final class SearchCanvas extends View {
             for (Hit h : hits) if (!h.app && !h.store) { if (t++ == index) { host.open(h); return; } }
             for (Hit h : hits) if (h.app || h.store) { if (t++ == index) { host.open(h); return; } }
         } else if (zone == ACTION) {
-            if (index == 0) host.ask(query);
+            if (askShown() && index == 0) host.ask(query);
             else { query = ""; host.submit("", false); }
         }
         invalidate();
