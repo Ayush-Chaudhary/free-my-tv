@@ -54,6 +54,8 @@ final class Prefs {
             KEY_HISENSE_APPS = 284, KEY_HISENSE_SETTINGS = KeyEvent.KEYCODE_NOTIFICATION, KEY_HISENSE_PROFILE = 288;
     /** A button's value that opens this home screen's All Apps. */
     static final String ALL_APPS = HomeMode.PKG + "#all";
+    /** A remote button that opens our search, listening: for a remote whose Assistant button only Google gets. */
+    static final String SEARCH = HomeMode.PKG + "#search";
     static final int[] KEYS = RemoteKeys.HISENSE ? new int[] {KEY_HISENSE_PRIME, KEY_HISENSE_YOUTUBE, KEY_HISENSE_DISNEY,
                     KEY_HISENSE_APPS, KEY_HISENSE_SETTINGS, KEY_HISENSE_PROFILE}
             : RemoteKeys.SONY

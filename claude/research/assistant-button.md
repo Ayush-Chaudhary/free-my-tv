@@ -3,7 +3,39 @@
 TV: Ayush's TCL G10, Google TV, Android 12. Nothing in this round was run on the TV; the evidence is from logs
 captured on that TV in an earlier session (24 October 2026) and from how Android handles these keys.
 
-## Recommendation
+## Result on the TV (28 October 2026)
+
+**The real remote's Assistant button can't be redirected without root.** On the TCL G10 the button is not a key:
+the Bluetooth voice remote talks to Google's remote service, which opens Google's voice input directly. A real
+press logs no key event and no activity start, only `AS.AudioService: callingPackageName com.google.android.katniss`
+as Google starts recording. Neither the key filter nor an intent can get in between.
+
+**What works instead:** any of the remote's app buttons can now be set to *Search* in *Remote Buttons*. Ayush set
+the TCL Channel button (it was on *Nothing*); a press opens Free My TV's search with the mic listening. Tested on
+the TV with the real remote: PASS.
+
+**The `WEB_SEARCH` hook (`VoiceKeyActivity`, `assistant_button`) works, but only for an injected key 231**, the
+path Rudra's test took. With `adb shell input keyevent KEYCODE_VOICE_ASSIST`: Android's chooser lists Free My TV,
+*Always* sticks, and every later press opens our search, listening. Switching the setting back to Google
+Assistant sends the press to Google again. Kept, off by default, for remotes that do send the key; it doesn't help
+this remote.
+
+What was tried (all on the TV, injected 231 unless said):
+
+| Test | Result |
+|---|---|
+| Google's `WEB_SEARCH` filter priority | none set: Free My TV is offered next to Google |
+| First press | chooser *Complete action using* (Free My TV, Google) |
+| *Always*, then press | `VoiceKeyActivity` → `SearchActivity` → Google's speech input: PASS |
+| Press again with a search left open behind | listens again: PASS (first build failed here; fixed with `taskAffinity=""`) |
+| Search key (84) | still opens our search, listening: PASS |
+| Setting → Google Assistant, press | Google, no chooser: PASS |
+| Setting → Search again | ours, no chooser (Android kept *Always*) |
+| **Real remote: tap, and hold** | **Google both times** (no key, no intent) |
+| Real remote: TCL Channel button set to *Search* | our search, listening: PASS |
+| Original mode | not tried (needs a mode switch) |
+
+## Recommendation (before the TV test)
 
 **Answer the intent, not the key.** The button never reaches an app as a key, but the system turns it into an
 `android.speech.action.WEB_SEARCH` intent that it starts the normal way, by resolving it like any other app's

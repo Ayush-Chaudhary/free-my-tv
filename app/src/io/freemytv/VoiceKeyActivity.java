@@ -14,8 +14,8 @@ import android.os.Bundle;
  * so RemoteKeyService never sees them, and asks Android for a web search (android.speech.action.WEB_SEARCH, sent by the
  * system), which only Google's app answers on a stock TV. With the Assistant button set to Search (Remote Buttons, or
  * assistant_button in config.properties), this activity answers it too: the next press shows Android's chooser, and
- * Free My TV → Always makes the button ours. Set back to Google Assistant, the activity is turned off and Android
- * forgets that choice with it.
+ * Free My TV → Always makes the button ours. Set back to Google Assistant, the activity is turned off and the button
+ * goes to Google again; Android keeps the Always for when it's turned back on (tried on a TCL G10).
  *
  * It shows nothing. In Free My TV mode it opens our search, listening; otherwise (Original) the press goes on to
  * Google's app as before.

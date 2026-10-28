@@ -152,12 +152,14 @@
             android:theme="@style/FreeMyTV.Home" />
 
         <!-- The TCL remote's Assistant / mic button: the system sends WEB_SEARCH for it. Off until the person sets the
-             button to Search (VoiceKeyActivity.apply); shows nothing and hands over to SearchActivity or Google. -->
+             button to Search (VoiceKeyActivity.apply); shows nothing and hands over to SearchActivity or Google.
+             A task of its own: in the app's task, a search left open behind would just come back and this would not run. -->
         <activity
             android:name=".VoiceKeyActivity"
             android:process=":home"
             android:enabled="false"
             android:exported="true"
+            android:taskAffinity=""
             android:excludeFromRecents="true"
             android:noHistory="true"
             android:theme="@android:style/Theme.NoDisplay">

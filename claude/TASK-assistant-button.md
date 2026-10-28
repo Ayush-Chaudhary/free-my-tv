@@ -100,3 +100,6 @@ short summary to the Log below.
   implicit `android.speech.action.WEB_SEARCH` intent (TV log from 24 October). Built `VoiceKeyActivity`, which answers
   that intent (off by default; Remote Buttons → Assistant button, or `assistant_button=true`). Not tried on the TV yet:
   the research file has the test steps, including a check of whether Google's filter outranks ours.
+- 2026-10-28: Claude, on the TV with Ayush. The real remote's Assistant button goes straight to Google (no key, no
+  intent): not redirectable without root. Added *Search* as a choice for the remote's app buttons; the TCL Channel
+  button set to Search opens our search, listening (PASS). The WEB_SEARCH hook works for an injected key 231 only.

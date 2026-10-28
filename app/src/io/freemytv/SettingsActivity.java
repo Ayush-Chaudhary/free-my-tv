@@ -1475,6 +1475,9 @@ public class SettingsActivity extends Activity {
                 appPkgs.add(HomeMode.PKG);
                 appLabels.add("Free My TV");
             }
+            // Free My TV's search, listening: the remote's Assistant button can go only to Google on some TVs.
+            appPkgs.add(Prefs.SEARCH);
+            appLabels.add(Ui.tr("Search"));
             if (RemoteKeys.HISENSE) {
                 appPkgs.add(Prefs.ALL_APPS);
                 appLabels.add(Ui.tr("All Apps"));
@@ -2166,7 +2169,7 @@ public class SettingsActivity extends Activity {
                     : Ui.tr("OK removes them; the arrows turn them on or off."))
                     : screen == POWER && powerRow() != P_SHOW && unavailable(focus) == null ? Ui.tr("OK opens the list. ← → change the value.")
                     : screen == HOME_SETTINGS && from + focus == keyRow() ? Ui.tr("OK: send it from your phone, or type it.")
-                    : keys && assistRow(focus) && Prefs.assistButton() ? Ui.tr("Next press: pick Free My TV, then Always.")
+                    : keys && assistRow(focus) && Prefs.assistButton() ? Ui.tr("If the TV asks, pick Free My TV, then Always.")
                     : screen == HOME_SETTINGS && from + focus == updatesRow() ? (Updates.ready(updates, installed)
                     ? Ui.tr("OK installs it; Android asks first.") : Ui.tr("OK checks for a new version."))
                     : Ui.tr("OK or the arrows change the value.")), LIST_X * k + 30 * k, hy, hint);
