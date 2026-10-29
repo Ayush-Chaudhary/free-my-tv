@@ -151,6 +151,24 @@
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density|fontScale|locale|layoutDirection"
             android:theme="@style/FreeMyTV.Home" />
 
+        <!-- The TCL remote's Assistant / mic button: the system sends WEB_SEARCH for it. Off until the person sets the
+             button to Search (VoiceKeyActivity.apply); shows nothing and hands over to SearchActivity or Google.
+             A task of its own: in the app's task, a search left open behind would just come back and this would not run. -->
+        <activity
+            android:name=".VoiceKeyActivity"
+            android:process=":home"
+            android:enabled="false"
+            android:exported="true"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.speech.action.WEB_SEARCH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <!-- Fire TV: the same home screen opened as a regular app (no resumeWhilePausing, which leaves window focus on
              Amazon's paused launcher on Fire OS). -->
         <activity

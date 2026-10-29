@@ -119,6 +119,11 @@ final class RemoteKeys {
             lastKey = keyCode;
             lastDown = e.getEventTime();
             if (burst) return true;
+            if (pkg.equals(Prefs.SEARCH)) {
+                AppLog.w("remote key " + e.getKeyCode() + " -> search");
+                SearchActivity.startVoice(c);
+                return true;
+            }
             // Our own package means the home screen in use (Xiaomi's Mi button): ours, or the TV's own after the
             // watchdog handed it back. Not the settings app our launcher icon opens.
             Intent intent = pkg.equals(HomeMode.PKG) || pkg.equals(Prefs.ALL_APPS)

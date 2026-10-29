@@ -54,6 +54,8 @@ final class Prefs {
             KEY_HISENSE_APPS = 284, KEY_HISENSE_SETTINGS = KeyEvent.KEYCODE_NOTIFICATION, KEY_HISENSE_PROFILE = 288;
     /** A button's value that opens this home screen's All Apps. */
     static final String ALL_APPS = HomeMode.PKG + "#all";
+    /** A remote button that opens our search, listening: for a remote whose Assistant button only Google gets. */
+    static final String SEARCH = HomeMode.PKG + "#search";
     static final int[] KEYS = RemoteKeys.HISENSE ? new int[] {KEY_HISENSE_PRIME, KEY_HISENSE_YOUTUBE, KEY_HISENSE_DISNEY,
                     KEY_HISENSE_APPS, KEY_HISENSE_SETTINGS, KEY_HISENSE_PROFILE}
             : RemoteKeys.SONY
@@ -289,6 +291,10 @@ final class Prefs {
      * service cannot run: otherwise Home would stay on Google's screen with nothing to take it back.
      */
     static boolean keepGoogleHome() { return sp().getBoolean("keepGoogleHome", Config.KEEP_GOOGLE_HOME); }
+
+    /** The TCL remote's Assistant button opens our search (config assistant_button; Remote Buttons). See VoiceKeyActivity. */
+    static boolean assistButton() { return sp().getBoolean("assistButton", Config.ASSISTANT_BUTTON); }
+    static void setAssistButton(boolean on) { put("assistButton", on); }
     static void setQuotes(boolean on) { put("quotes", on); }
 
     /** Your photos (Photos, sent from a computer) on the screensaver and behind the home screen, once imported. */
