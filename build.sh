@@ -60,6 +60,7 @@ CRYPTO=false; [ "$(prop show_crypto true)" = "true" ] && CRYPTO=true
 ANIMATION=false; [ "$(prop hide_animation false)" = "true" ] && ANIMATION=true
 SAVER=true; [ "$(prop screensaver true)" = "false" ] && SAVER=false
 KEEP_GOOGLE=false; [ "$(prop keep_google_home false)" = "true" ] && KEEP_GOOGLE=true
+ASSIST_BUTTON=false; [ "$(prop assistant_button false)" = "true" ] && ASSIST_BUTTON=true
 
 rm -rf out && mkdir -p out/gen/io/freemytv out/classes
 cat > out/gen/io/freemytv/Config.java <<EOF
@@ -88,6 +89,8 @@ final class Config {
     static final boolean SCREENSAVER = $SAVER;   // false: the TV keeps its own
     /** Leave Google TV's home installed. The switch only does this where the key service can run (see RemoteKeys). */
     static final boolean KEEP_GOOGLE_HOME = $KEEP_GOOGLE;
+    /** TCL: the remote's Assistant button opens our search (VoiceKeyActivity). Remote Buttons can change it on the TV. */
+    static final boolean ASSISTANT_BUTTON = $ASSIST_BUTTON;
     static final boolean GENERIC = $GENERIC;   // built with --generic, as the APK on GitHub's releases (Updates)
 }
 EOF

@@ -31,7 +31,16 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
 
     /** Opens this screen and starts listening. Safe from the key process (its own task). */
     static void startVoice(android.content.Context c) {
-        c.startActivity(new Intent(c, SearchActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra(EXTRA_VOICE, true));
+        c.startActivity(front(new Intent(c, SearchActivity.class)).putExtra(EXTRA_VOICE, true));
+    }
+
+    /**
+     * From outside the app: the app's task, with this screen on top and nothing above it. NEW_TASK alone only brings that
+     * task back as it was, so a voice screen left open in it (Google's, after an update restarted the app) came back
+     * instead, and this screen never heard the press.
+     */
+    static Intent front(Intent intent) {
+        return intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
     }
 
     static final String EXTRA_QUERY = "query";
@@ -113,6 +122,32 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
         if (tts != null) tts.shutdown();
         io.shutdownNow();
         super.onDestroy();
+    }
+
+    /**
+     * Back leaves the search. If another app's screen is under it in this task (Google's voice screen, left there when an
+     * update restarted the app), the whole task goes, so that screen can't come back. In the home screen's task, only
+     * the search closes.
+     */
+    @Override public void onBackPressed() {
+        android.app.ActivityManager am = getSystemService(android.app.ActivityManager.class);
+        if (am != null) {
+            for (android.app.ActivityManager.AppTask t : am.getAppTasks()) {
+                android.app.ActivityManager.RecentTaskInfo info;
+                try {
+                    info = t.getTaskInfo();
+                } catch (IllegalArgumentException e) {
+                    continue;   // a task that just went away
+                }
+                if (info.id != getTaskId() || info.baseActivity == null) continue;
+                if (!getPackageName().equals(info.baseActivity.getPackageName())) {
+                    AppLog.w("search: closing a task that " + info.baseActivity.getPackageName() + " was left in");
+                    t.finishAndRemoveTask();   // the task's, not the activity's: that one only goes with the task's root
+                    return;
+                }
+            }
+        }
+        super.onBackPressed();
     }
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
