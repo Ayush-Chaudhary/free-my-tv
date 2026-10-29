@@ -47,3 +47,8 @@ Once it's deployed, put these results from the section 8 test in the PR descript
 - `wrangler tail` shows CPU under 10 ms.
 
 If deployment has to wait for Ayush's accounts, open the PR with the unit tests passing and mark the curl results as pending.
+
+## Log (Claude, 29 October 2026)
+- Built `assistant/` on `feat/assistant-worker`: Worker, `setup.sh`, README, 38 unit tests passing (`npm test`).
+- Ran the real Workers runtime locally (`wrangler dev --local`, fake keys): 401 for a wrong token, 429 from turn 11 in a minute. Found and fixed one deploy bug (entry file may export only handlers).
+- Deployment and the curl results wait for Ayush's Cloudflare, Groq and TMDB accounts (see the PR description).
