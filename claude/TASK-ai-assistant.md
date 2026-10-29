@@ -38,3 +38,10 @@ TCL's `TclPhoneWindowManagerEx` catches the remote's Assistant button (keycodes 
 ## Build notes for later phases
 - Build with `build.sh` (no Gradle) using JDK 17, and check with `tools/check.sh`.
 - Install with `adb install -r -d` so app data is kept. Never uninstall the app or clear its data.
+
+## Log
+
+- 2026-10-28: Claude. Plan written in `claude/research/ai-assistant.md`:
+  - a Cloudflare Worker backend (Groq first, Gemini paid as fallback) with the keys kept on the backend;
+  - a per-TV token, conversation history kept on the TV, and the existing search screen and title links;
+  - six phased PRs. No app code.
