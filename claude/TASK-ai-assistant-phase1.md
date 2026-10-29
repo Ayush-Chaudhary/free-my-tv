@@ -26,6 +26,13 @@ Follow the plan in `claude/research/ai-assistant.md`: sections 1, 2 and 4 for th
 8. **Tests:** unit tests run with `node --test` against recorded Groq and TMDB responses (fixtures in the repo, with no keys in them). Cover auth, the rate limit, the contract, dropping made-up ids, the reply cap and the fallbacks.
 9. **`assistant/README.md`:** setup, deploy, rotation and how to run the tests.
 
+## Indian-accented English (check and plan across the whole pipeline)
+Ayush speaks Indian-accented English, and the assistant must handle it well. Check this end to end, write the findings into the PR description, and flag anything that changes phases 2 to 6.
+- **Speech recognition on the G10:** whether Android's `SpeechRecognizer` can be set to `en-IN` instead of `en-US` (for example with `RecognizerIntent.EXTRA_LANGUAGE`), and how accurate it is on movie and show titles spoken with an Indian accent. If on-device accuracy looks poor, propose a fallback such as a cloud speech-to-text option with an Indian-English model, with its free tier and paid cost.
+- **The Worker and the LLM:** handle transcription errors and Hinglish phrasing gracefully. For example, the plan prompt should tolerate misheard titles and mixed Hindi-English requests, and the Worker should fuzzy-match titles against TMDB (`/search/multi` with spelling variants) rather than relying on exact text. Cover this in the unit tests with recorded examples.
+- **Spoken reply (optional):** whether an Indian-English TTS voice (`en-IN`) is available on the G10 and worth using.
+- Phase 1 changes only the Worker. Anything for the app (the recognizer language, TTS voice) goes into the later phase it belongs to, written up in the PR as a recommendation.
+
 ## Check before building
 - **Groq's free limits:** check them in the Groq console, since the plan's figures come from third-party reports. Record what you find in the PR description.
 - **Watchmode is out of date in the plan.** Ayush now has a Watchmode key in `config.properties` on his Mac, so the "Title links without Watchmode" risk in section 7 no longer applies. Title links already open Max and Prime title pages on the TV. The Worker doesn't need Watchmode.
