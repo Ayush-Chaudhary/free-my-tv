@@ -1,4 +1,5 @@
-// The daily cap: a Durable Object per token (named by the token's hash), counting turns per UTC day. Requests to a
+// The daily cap: a Durable Object per token (named by the token's hash), counting turns per calendar day in New York
+// (America/New_York, so the count resets at local midnight, EST or EDT). Requests to a
 // Durable Object run one at a time, so the read-then-write below can't race.
 
 export class Limiter {
@@ -19,10 +20,17 @@ export class Limiter {
   }
 }
 
+const NY = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' });
+
+/** The date in New York (YYYY-MM-DD) at `now`. Intl handles the daylight-saving changes. */
+export function nyDay(now = Date.now()) {
+  return NY.format(new Date(now));
+}
+
 /** Counts one turn for this token today. true while under `max`. */
 export async function takeDaily(env, tokenHash, max, now = Date.now()) {
   const stub = env.LIMITER.get(env.LIMITER.idFromName(tokenHash));
-  const day = new Date(now).toISOString().slice(0, 10);
+  const day = nyDay(now);
   const res = await stub.fetch('https://limiter/hit', { method: 'POST', body: JSON.stringify({ max, day }) });
   return (await res.json()).ok;
 }

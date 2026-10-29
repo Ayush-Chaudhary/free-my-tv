@@ -107,7 +107,7 @@ test('a misheard title is found: the loose second try and the sound-alike rankin
   assert.equal(res.status, 200);
   assert.equal(json.picks[0].id, 19404);
   assert.equal(json.picks[0].service, 'netflix');
-  assert.ok(json.reply.includes('Yeh raha'));
+  assert.ok(json.reply.startsWith("Here's Dilwale"));
   const queries = f.calls.filter((c) => c.path === '/3/search/multi').map((c) => c.search.get('query'));
   assert.ok(queries.includes('dil vale dulhania le jayange'));
   assert.ok(queries.includes('Dilwale Dulhania Le Jayenge'));
@@ -127,14 +127,23 @@ test('title search ranks the closest title first, ahead of a more popular lookal
 });
 
 test('Hinglish asks reach the model with the language and the plan filters pass through', async () => {
-  const f = fakeFetch({ groq: ['groq-plan-hinglish-reco', { reply: 'Yeh lo, teen hasi wali filmein.', picks: [{ id: 587792 }, { id: 445571 }, { id: 4638 }] }], tmdb: funnyRoutes() });
+  const f = fakeFetch({ groq: ['groq-plan-hinglish-reco', { reply: 'Here are three funny Hindi films under two hours.', picks: [{ id: 587792 }, { id: 445571 }, { id: 4638 }] }], tmdb: funnyRoutes() });
   const { json } = await run({ query: 'koi hasi wali Hindi movie dikhao jo do ghante se choti ho', lang: 'en' }, f);
   const d = f.calls.find((c) => c.path === '/3/discover/movie');
   assert.equal(d.search.get('with_original_language'), 'hi');
   assert.equal(d.search.get('with_runtime.lte'), '120');
-  assert.equal(json.reply, 'Yeh lo, teen hasi wali filmein.');
+  assert.equal(json.reply, 'Here are three funny Hindi films under two hours.');
   const system = f.calls.find((c) => c.host === 'api.groq.com').body.messages[0].content;
   assert.ok(/Hinglish/.test(system) && /misheard/.test(system));
+  assert.ok(/plain English/.test(system), 'the plan asks for English replies');
+});
+
+test('replies are asked for in plain English, even for a Hinglish request', async () => {
+  const f = fakeFetch({ groq: ['groq-plan-hinglish-reco', { reply: 'Here are three funny Hindi films.', picks: [{ id: 587792 }, { id: 445571 }, { id: 4638 }] }], tmdb: funnyRoutes() });
+  await run({ query: 'koi hasi wali Hindi movie dikhao', lang: 'en' }, f);
+  const choose = f.calls.filter((c) => c.host === 'api.groq.com')[1].body.messages[0].content;
+  assert.ok(/plain, simple English/.test(choose));
+  assert.ok(!/reply in simple Hinglish/.test(choose));
 });
 
 test('a person\'s words cannot change the instructions or the output shape', async () => {

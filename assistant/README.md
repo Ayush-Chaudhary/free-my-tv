@@ -11,7 +11,7 @@ It holds the Groq and TMDB keys, so neither is in the app or the repo. No sign-u
 `POST /v1/turn` with `Authorization: Bearer <token>`:
 
 1. **Plan.** Groq (Llama 3.3 70B, JSON mode) turns the request into `intent`, title `searches` (spelling variants),
-   a TMDB `discover` filter and `like`. It's told the speech may come from Indian English, Hindi or Hinglish and may be misheard.
+   a TMDB `discover` filter and `like`. It's told the speech may come from Indian English, Hindi or Hinglish and may be misheard. Replies are always in plain English.
 2. **Fetch.** TMDB, in parallel: `/search/multi` (a term with no result is retried loosened, and results are ranked
    by how alike their title sounds), `/discover/*` on the TV's services in the region, `/recommendations` for
    "more like the second one" (only for an id in the history), then `watch/providers` for up to 15 candidates.
@@ -81,7 +81,7 @@ curl -s -X POST https://free-my-tv-assistant.<you>.workers.dev/v1/turn \
 ## Limits
 
 - **Per token:** 10 turns a minute (Cloudflare's Rate Limiting binding; approximate and per location) and 300 a day
-  (an exact counter in a small Durable Object, free on the Workers Free plan; the day is UTC). The binding only allows
+  (an exact counter in a small Durable Object, free on the Workers Free plan; the day is the calendar day in New York, America/New_York, so it resets at local midnight through EST and EDT). The binding only allows
   10 or 60 second periods, which is why the daily count lives in the Durable Object.
 - **Cloudflare Free:** 100,000 requests a day, 10 ms of CPU per request (time spent waiting on Groq and TMDB doesn't
   count) and 50 subrequests. A turn makes about 20 (2 Groq, up to 6 searches/discovers, up to 15 provider lookups).
