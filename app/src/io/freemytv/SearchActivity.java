@@ -159,6 +159,18 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
         return super.dispatchKeyEvent(event);
     }
 
+    @Override public void commit(String query) {
+        if (demo) return;
+        handler.removeCallbacks(typed);
+        pending = query == null ? "" : query.trim();
+        canvas.setQuery(query == null ? "" : query);
+        if (pending.isEmpty()) {
+            showIdle();
+            return;
+        }
+        run(pending, false);
+    }
+
     @Override public void submit(String query, boolean voice) {
         if (demo) return;
         handler.removeCallbacks(typed);
@@ -168,8 +180,8 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
             showIdle();
             return;
         }
-        showApps(pending, voice);
         if (pending.length() >= 2) handler.postDelayed(typed, voice ? 0 : TYPING_PAUSE);
+        else canvas.show(appHits(pending), "", "");
     }
 
     private final Runnable typed = () -> run(pending, false);
@@ -200,7 +212,7 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
             }
         }
         if (query.length() < 2) return;
-        canvas.show(appHits(query), Ui.tr("Searching…"), "");
+        canvas.beginThinking();
         String forTmdb = opened != null ? opened : query;
         io.execute(() -> {
             List<Recs.Pick> found;
@@ -246,6 +258,8 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
         addStore(query, cards);
         String reply = "";
         String status = note;
+        cards.sort((a, b) -> Recs.searchOrder(query, a.title, a.year, a.pick == null ? 0 : a.pick.popularity,
+                onApps(a), b.title, b.year, b.pick == null ? 0 : b.pick.popularity, onApps(b)));
         if (cards.isEmpty()) status = Ui.trf("No matches for “{query}”", "query", query);
         else if (voice) {
             for (SearchCanvas.Hit h : cards) {
@@ -262,20 +276,69 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
 
     private void speak(String line) {
         if (tts == null) tts = new TextToSpeech(this, ok -> {
-            if (ok == TextToSpeech.SUCCESS && tts != null) {
-                tts.speak(line, TextToSpeech.QUEUE_FLUSH, null, "search");
-                canvas.show(lastHits, Ui.tr("Also said aloud · the title is below"), line);
-            }
+            if (ok == TextToSpeech.SUCCESS && tts != null) tts.speak(line, TextToSpeech.QUEUE_FLUSH, null, "search");
         });
         else tts.speak(line, TextToSpeech.QUEUE_FLUSH, null, "search");
     }
 
-    private List<SearchCanvas.Hit> lastHits = new ArrayList<>();
-
-    private void showApps(String query, boolean voice) {
-        List<SearchCanvas.Hit> cards = appHits(query);
-        canvas.show(cards, voice ? "" : "", "");
+    /**
+     * Phase 2: show one Worker turn. No network here. The TV has already filled each pick's {@code service}
+     * (null when it isn't on an installed app). {@code open_app} launches a matching app when one is installed.
+     */
+    public void present(AssistantTurn turn) {
+        if (demo || turn == null) return;
+        handler.removeCallbacks(typed);
+        generation++;
+        String reply = AssistantTurn.clip(turn.reply);
+        if (AssistantTurn.OPEN_APP.equals(turn.intent)) {
+            String[] app = appForService(turn.app);
+            if (app != null) {
+                openApp(app[0], app[1]);
+                return;
+            }
+        }
+        List<SearchCanvas.Hit> cards = new ArrayList<>();
+        if (!AssistantTurn.CHAT.equals(turn.intent)) {
+            for (AssistantTurn.Pick p : turn.picks) {
+                SearchCanvas.Hit h = new SearchCanvas.Hit();
+                h.title = p.title == null ? "" : p.title;
+                h.year = p.year;
+                h.why = p.why == null ? "" : p.why;
+                h.service = p.service;
+                h.show = "tv".equals(p.kind);
+                Recs.Pick pick = new Recs.Pick();
+                pick.id = p.id;
+                pick.kind = p.kind == null || p.kind.isEmpty() ? "movie" : p.kind;
+                pick.title = h.title;
+                pick.year = p.year;
+                h.pick = pick;
+                String[] app = appForService(p.service);
+                if (app != null) {
+                    h.pkg = app[0];
+                    h.label = app[1];
+                    if (h.service == null || h.service.isEmpty()) h.service = app[1];
+                    pick.pkg = app[0];
+                }
+                cards.add(h);
+            }
+        }
+        if (!reply.isEmpty()) speak(reply);
+        canvas.show(cards, "", reply);
     }
+
+    /** Match a Worker service key ("prime", "Prime Video") to an installed app, or null. */
+    private String[] appForService(String service) {
+        if (service == null || service.isEmpty() || apps == null) return null;
+        String s = service.toLowerCase(Locale.ROOT);
+        for (String[] a : apps) {
+            if (a[1] == null) continue;
+            String name = a[1].toLowerCase(Locale.ROOT);
+            if (name.contains(s) || s.contains(name)) return a;
+        }
+        return null;
+    }
+
+    private List<SearchCanvas.Hit> lastHits = new ArrayList<>();
 
     private List<SearchCanvas.Hit> appHits(String query) {
         List<SearchCanvas.Hit> out = new ArrayList<>();
@@ -290,6 +353,7 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
                 h.pkg = a[0];
                 h.app = true;
                 h.meta = Ui.tr("Open");
+                h.art = HomeApps.searchPoster(this, a[0]);
                 out.add(h);
             }
         }
@@ -298,6 +362,10 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
     }
 
     /** Known services that are not installed, only when the typed name matches. */
+    private static boolean onApps(SearchCanvas.Hit h) {
+        return h.app || (h.service != null && !h.service.isEmpty() && !h.store);
+    }
+
     private void addStore(String query, List<SearchCanvas.Hit> cards) {
         String q = query.toLowerCase(Locale.ROOT);
         for (String[] s : Recs.catalog(this)) {
@@ -317,7 +385,10 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
         h.title = p.title == null ? "" : p.title;
         h.pkg = p.pkg;
         h.show = "tv".equals(p.kind);
-        h.meta = p.pkg != null ? Recs.serviceName(p) : Ui.tr("Not on your apps");
+        h.year = p.year;
+        h.length = p.length == null ? "" : p.length;
+        h.service = p.pkg != null ? Recs.serviceName(p) : null;
+        h.meta = h.service != null ? h.service : Ui.tr("Not on your apps");
         return h;
     }
 
@@ -390,7 +461,7 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
         recognizer.setRecognitionListener(new RecognitionListener() {
             @Override public void onReadyForSpeech(Bundle params) { canvas.setListening(true, ""); }
             @Override public void onBeginningOfSpeech() {}
-            @Override public void onRmsChanged(float rmsdB) {}
+            @Override public void onRmsChanged(float rmsdB) { canvas.setLevel(rmsdB); }
             @Override public void onBufferReceived(byte[] buffer) {}
             @Override public void onEndOfSpeech() {}
             @Override public void onError(int error) { canvas.setListening(false, ""); }
