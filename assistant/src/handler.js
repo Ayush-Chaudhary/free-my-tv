@@ -44,7 +44,9 @@ export async function handle(request, env, deps = {}) {
   try {
     const fetchImpl = deps.fetch ?? fetch;
     const http = (...args) => fetchImpl(...args);
-    const { body, stats } = await runTurn(req, env, { fetch: http, now, cache: deps.cache || sharedCache });
+    // caches.default is the Workers Cache API. Tests pass their own. A missing cache just fetches every time.
+    const httpCache = deps.httpCache !== undefined ? deps.httpCache : (typeof caches !== 'undefined' && caches.default);
+    const { body, stats } = await runTurn(req, env, { fetch: http, now, cache: deps.cache || sharedCache, httpCache });
     return done(json(200, body), { llm: stats.llm, tmdb: stats.tmdb, picks: body.picks.length, intent: body.intent });
   } catch (e) {
     // Name, message and stack only. Never the query, the token or a request body.

@@ -25,7 +25,11 @@ test('a funny movie under 100 minutes: 3-5 real picks, the contract, the filters
   assert.equal(d.search.get('with_runtime.lte'), '100');
   assert.equal(d.search.get('with_genres'), '35');
   assert.equal(d.search.get('watch_region'), 'US');
+  assert.equal(d.search.get('with_watch_monetization_types'), 'flatrate');
   assert.deepEqual(d.search.get('with_watch_providers').split('|').map(Number).sort((a, b) => a - b), [8, 9, 15, 337, 350, 531, 1899]);
+  const providerCalls = f.calls.filter((c) => /\/(movie|tv)\/\d+\/watch\/providers$/.test(c.path));
+  assert.ok(providerCalls.length <= 6, `${providerCalls.length} provider lookups`);
+  assert.ok(f.calls.length < 50, `${f.calls.length} subrequests`);
   assert.equal(d.search.get('api_key'), 'tmdb-test-key');
   assert.equal(f.groqLeft(), 0);
 });

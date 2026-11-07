@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { handle } from '../src/handler.js';
-import { fold, serviceOf, similarity, simplify } from '../src/match.js';
+import { SCORE_CAP, fold, serviceOf, similarity, simplify } from '../src/match.js';
+import { planSystem, chooseSystem } from '../src/prompts.js';
+import { Tmdb, flatrateIn } from '../src/tmdb.js';
 import { REPLY_MAX } from '../src/turn.js';
 import { ask, fakeFetch, funnyRoutes, fx, gptOss, makeEnv } from './helpers.js';
 
@@ -248,6 +250,63 @@ test('simplify drops filler words, then the last word', () => {
   assert.equal(simplify('the movie Dil Chahta Hai dikhao'), 'dil chahta hai');
   assert.equal(simplify('dil vale dulhania le jayange'), 'dil vale dulhania le');
   assert.equal(simplify('two words'), '');
+});
+
+test('search ranks only the first page of titles, and keeps a match inside that cap', async () => {
+  const results = [];
+  for (let i = 0; i < SCORE_CAP; i++) results.push({ id: i + 1, media_type: 'movie', title: `Nothing ${i}`, popularity: 5, overview: '', release_date: '2020-01-01', genre_ids: [], vote_average: 1, original_language: 'en' });
+  results[3] = { ...results[3], title: 'Exact Match', original_title: 'Something Else' };
+  results.push({ id: 99, media_type: 'movie', title: 'Exact Match', popularity: 100, overview: '', release_date: '2020-01-01', genre_ids: [], vote_average: 9, original_language: 'en' });
+  const tmdb = new Tmdb({ TMDB_KEY: 'k' }, async () => new Response(JSON.stringify({ results }), { status: 200, headers: { 'content-type': 'application/json' } }), { tmdb: 0 });
+  const found = await tmdb.search('Exact Match', 'en');
+  assert.equal(found[0].id, 4);
+  assert.ok(!found.some((c) => c.id === 99));
+});
+
+test('flatrateIn slices one region: missing key, nested braces, escapes, and a region key inside a string', () => {
+  assert.deepEqual(flatrateIn('{"id":1,"results":{"GB":{"flatrate":[{"provider_id":8,"provider_name":"Netflix"}]}}}', 'US'), []);
+  assert.deepEqual(flatrateIn('{"results":{}}', 'US'), []);
+  assert.deepEqual(flatrateIn('not json', 'US'), []);
+  assert.deepEqual(flatrateIn('{"results":{"US":{"flatrate":[]}}}', 'USA'), []);
+  // The GB link contains the characters "US":{ once JSON-escaped. Braces and quotes inside US strings stay in the slice.
+  const text = JSON.stringify({
+    id: 1,
+    results: {
+      GB: {
+        link: 'https://example.com/?q="US":{"flatrate":[{"provider_name":"Not Netflix"}]}',
+        flatrate: [{ provider_id: 8, provider_name: 'Netflix', logo_path: 'banner "US":{ cropped' }],
+      },
+      DE: { flatrate: [{ provider_id: 1899, provider_name: 'Max', note: 'a } brace { inside' }] },
+      US: {
+        link: 'https://www.themoviedb.org/movie/1/watch',
+        flatrate: [{ provider_id: 9, provider_name: 'Amazon Prime Video', note: 'he said "hi" {really}' }],
+        rent: [{ provider_id: 2, provider_name: 'Rent Me' }],
+      },
+    },
+  });
+  assert.ok(text.includes('\\"US\\":'), 'the decoy key is inside a string');
+  const flat = flatrateIn(text, 'US');
+  assert.equal(flat.length, 1);
+  assert.equal(flat[0].provider_name, 'Amazon Prime Video');
+  assert.equal(flat[0].note, 'he said "hi" {really}');
+  assert.equal(flatrateIn(text, 'DE')[0].note, 'a } brace { inside');
+});
+
+test('provider lookups follow the picks, not every discover row', async () => {
+  const f = funny('groq-choose-funny');
+  await run({ query: 'a funny movie' }, f);
+  const ids = f.calls.filter((c) => /\/movie\/\d+\/watch\/providers$/.test(c.path)).map((c) => c.path.split('/')[3]);
+  assert.deepEqual(ids.sort(), ['445571', '4638', '481084', '587792']);
+});
+
+test('the plan and choose instructions keep the same words', () => {
+  const plan = planSystem(['netflix', 'prime'], 'US');
+  assert.ok(plan.includes('The TV\'s streaming apps (keys): netflix, prime. Region: US.'));
+  assert.ok(plan.includes('genres": [from: action, adventure,'));
+  assert.equal(planSystem(['netflix', 'prime'], 'US'), plan);
+  const choose = chooseSystem('en');
+  assert.ok(choose.includes("the TV's language is en)"));
+  assert.equal(chooseSystem('en'), choose);
 });
 
 test('serviceOf matches the TV\'s services as the app does', () => {

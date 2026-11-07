@@ -6,6 +6,8 @@ import { Tmdb } from './tmdb.js';
 
 export const REPLY_MAX = 220;
 const MAX_CANDIDATES = 15;
+// Watch-provider bodies are large. Only the picks we might return are looked up, and never more than this.
+const PROVIDER_CAP = 6;
 const INTENTS = new Set(['recommend', 'search', 'open_app', 'chat']);
 
 export class BadRequest extends Error {}
@@ -45,17 +47,19 @@ function historyText(history) {
 }
 
 export async function runTurn(req, env, deps) {
-  const { fetch, now, cache } = deps;
+  const { fetch, now, cache, httpCache } = deps;
   const stats = { llm: 0, tmdb: 0, groq: null };
   const ctx = { env, fetch, now, stats, deadline: now() + 5500 };
-  const tmdb = new Tmdb(env, fetch, stats, cache);
+  const tmdb = new Tmdb(env, fetch, stats, cache, httpCache);
   const lang = req.lang;
   const out = (body) => ({ body, stats });
 
   // 1. Plan
+  const past = historyText(req.history) || '(none)';
+  const said = JSON.stringify(req.query);
   const plan = await chatJson([
     { role: 'system', content: planSystem(req.services, req.region) },
-    { role: 'user', content: `History (oldest first):\n${historyText(req.history) || '(none)'}\n\nThe person said: ${JSON.stringify(req.query)}` },
+    { role: 'user', content: `History (oldest first):\n${past}\n\nThe person said: ${said}` },
   ], ctx);
   const intent = INTENTS.has(plan.intent) ? plan.intent : 'recommend';
 
@@ -92,34 +96,47 @@ export async function runTurn(req, env, deps) {
 
   const candidates = [...known.values()].slice(0, MAX_CANDIDATES);
   if (!candidates.length) return out({ reply: "I couldn't find anything for that.", intent: 'search', picks: [] });
-  await Promise.all(candidates.map(async (c) => { c.service = await tmdb.serviceFor(c, req.region, req.services); }));
 
-  // 3. Choose
+  // 3. Choose. Discover already limited rows to the TV's apps, so the model can pick before we name which app.
   const view = candidates.map((c) => ({
-    id: c.id, kind: c.kind, title: c.title, year: c.year, genres: c.genres, rating: c.rating,
-    service: c.service, about: c.overview,
+    id: c.id, kind: c.kind, title: c.title, year: c.year, genres: c.genres, rating: c.rating, about: c.overview,
   }));
   const chosen = await chatJson([
     { role: 'system', content: chooseSystem(req.lang) },
-    { role: 'user', content: `History (oldest first):\n${historyText(req.history) || '(none)'}\n\nThe person said: ${JSON.stringify(req.query)}\n`
+    { role: 'user', content: `History (oldest first):\n${past}\n\nThe person said: ${said}\n`
       + (d && d.runtime_lte !== null && d.runtime_lte !== '' && Number.isFinite(Number(d.runtime_lte)) ? `Titles were filtered to at most ${Math.round(Number(d.runtime_lte))} minutes.\n` : '')
       + `\nCandidates:\n${JSON.stringify(view)}` },
   ], ctx);
 
-  // 4. Check: only this turn's own ids, once each, at most 5; the app only when this region lists it
-  const picks = [];
+  // 4. Check: only this turn's own ids, once each, at most 5. Provider lookups run in parallel
+  // for those picks, then for just enough extra candidates to top up to 3, and stop at PROVIDER_CAP.
+  const chosenIds = [];
   const seen = new Set();
   for (const p of Array.isArray(chosen.picks) ? chosen.picks : []) {
     const c = candidates.find((x) => x.id === Number(p && p.id));
     if (!c || seen.has(c.id)) continue;
     seen.add(c.id);
-    picks.push(toPick(c, p.why));
-    if (picks.length === 5) break;
+    chosenIds.push({ c, why: p.why });
+    if (chosenIds.length === 5) break;
   }
-  if (picks.length < 3) {   // top up from the candidates, ones on the TV's apps first
-    for (const c of [...candidates].sort((a, b) => Number(!!b.service) - Number(!!a.service))) {
+  const extra = [];
+  if (chosenIds.length < 3) {
+    for (const c of candidates) {
+      if (seen.has(c.id)) continue;
+      extra.push(c);
+      if (chosenIds.length + extra.length >= PROVIDER_CAP) break;
+    }
+  }
+  const want = new Set(req.services);
+  await Promise.all([...chosenIds.map((x) => x.c), ...extra].map(async (c) => {
+    c.service = await tmdb.serviceFor(c, req.region, want);
+  }));
+  const picks = chosenIds.map((x) => toPick(x.c, x.why));
+  if (picks.length < 3) {
+    extra.sort((a, b) => Number(!!b.service) - Number(!!a.service));
+    for (const c of extra) {
       if (picks.length >= 3) break;
-      if (!seen.has(c.id)) { seen.add(c.id); picks.push(toPick(c, '')); }
+      picks.push(toPick(c, ''));
     }
   }
   return out({ reply: capReply(chosen.reply) || 'Here is what I found.', intent, picks });

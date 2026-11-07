@@ -5,6 +5,7 @@
   "description": "The AI assistant's backend for Free My TV: a Cloudflare Worker (Workers Free plan).",
   "scripts": {
     "test": "node --test \"test/*.test.js\"",
+    "bench": "node bench.js",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail --format pretty"
   },
