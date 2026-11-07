@@ -1,0 +1,14 @@
+{
+  "name": "free-my-tv-assistant",
+  "private": true,
+  "type": "module",
+  "description": "The AI assistant's backend for Free My TV: a Cloudflare Worker (Workers Free plan).",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail --format pretty"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

@@ -1,0 +1,28 @@
+# The assistant's Worker, for the Workers Free plan. Secrets (never in this file): DEVICE_TOKEN_HASH, GROQ_KEY,
+# TMDB_KEY. `./setup.sh` sets them.
+name = "free-my-tv-assistant"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+# Status codes and timings are logged by hand (src/index.js), never the request text. Nothing is stored by Cloudflare.
+[observability]
+enabled = false
+
+# 10 turns a minute per token. The binding allows periods of 10 or 60 seconds only, and is approximate and per
+# location, so the exact daily cap (300) is counted in the Limiter below.
+[[ratelimits]]
+name = "RATE"
+namespace_id = "7301"
+  [ratelimits.simple]
+  limit = 10
+  period = 60
+
+# The daily cap: one counter per token, in a Durable Object (free on the Workers Free plan, SQLite-backed).
+[[durable_objects.bindings]]
+name = "LIMITER"
+class_name = "Limiter"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Limiter"]
