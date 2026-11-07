@@ -258,6 +258,8 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
         addStore(query, cards);
         String reply = "";
         String status = note;
+        cards.sort((a, b) -> Recs.searchOrder(query, a.title, a.year, a.pick == null ? 0 : a.pick.popularity,
+                onApps(a), b.title, b.year, b.pick == null ? 0 : b.pick.popularity, onApps(b)));
         if (cards.isEmpty()) status = Ui.trf("No matches for “{query}”", "query", query);
         else if (voice) {
             for (SearchCanvas.Hit h : cards) {
@@ -360,6 +362,10 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
     }
 
     /** Known services that are not installed, only when the typed name matches. */
+    private static boolean onApps(SearchCanvas.Hit h) {
+        return h.app || (h.service != null && !h.service.isEmpty() && !h.store);
+    }
+
     private void addStore(String query, List<SearchCanvas.Hit> cards) {
         String q = query.toLowerCase(Locale.ROOT);
         for (String[] s : Recs.catalog(this)) {

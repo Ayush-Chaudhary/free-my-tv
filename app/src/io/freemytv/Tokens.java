@@ -97,10 +97,15 @@ final class Tokens {
 
     static int cinemaBone(boolean dark) { return dark ? CINEMA_BONE_DARK : CINEMA_BONE_LIGHT; }
 
-    static final int CINEMA_SCRIM_LIGHT = 0xD1F5F5F7;
-    static final int CINEMA_SCRIM_DARK = 0x8C000000;
+    static final int CINEMA_SCRIM_LIGHT = 0xEBF5F5F7;
+    static final int CINEMA_SCRIM_DARK = 0xE0000000;
 
     static int cinemaScrim(boolean dark) { return dark ? CINEMA_SCRIM_DARK : CINEMA_SCRIM_LIGHT; }
+
+    static final int CINEMA_SCRIMSOFT_LIGHT = 0x9EF5F5F7;
+    static final int CINEMA_SCRIMSOFT_DARK = 0x80000000;
+
+    static int cinemaScrimsoft(boolean dark) { return dark ? CINEMA_SCRIMSOFT_DARK : CINEMA_SCRIMSOFT_LIGHT; }
 
     static final int ACCENT_ON = 0xFF3FD69B;
     static final int ACCENT_WARN = 0xFFFFC266;

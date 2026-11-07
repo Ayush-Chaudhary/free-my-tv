@@ -57,6 +57,7 @@ final class Recs {
         String link;            // opens the title in its app (looked up with Watchmode or Wikidata), or null: the app's home
         String length = "";     // "1h 42m" or a season count, once details are in; search draws it on its own
         int year;
+        float popularity;       // TMDB search score; search ranking only, not saved
         boolean detailed;
         java.io.File photo;     // one of your own photos (Photos): no title, no caption
     }
@@ -208,8 +209,8 @@ final class Recs {
     private final Map<String, Backdrop> images = new LinkedHashMap<>(16, 0.75f, true);   // this hour's, built and ready to draw
     private final java.util.Set<String> pending = new java.util.HashSet<>();
     /** Search heroes at about 960×540, and their portraits. Kept apart from the home-screen backdrops. */
-    private final Map<String, Bitmap> cinemaPlates = new LinkedHashMap<>();
-    private final Map<String, Bitmap> cinemaPosters = new LinkedHashMap<>();
+    private final Map<String, Bitmap> cinemaPlates = new LinkedHashMap<>(16, 0.75f, true);
+    private final Map<String, Bitmap> cinemaPosters = new LinkedHashMap<>(16, 0.75f, true);
     private final java.util.Set<String> cinemaPending = new HashSet<>();
     private final java.util.Set<String> cinemaReady = new HashSet<>();
     private volatile List<Pick> picks = new ArrayList<>();
@@ -457,7 +458,7 @@ final class Recs {
         JSONArray found = get("/search/multi?include_adult=false&language=" + lang() + "&query="
                 + URLEncoder.encode(q, "UTF-8")).getJSONArray("results");
         List<Pick> out = new ArrayList<>();
-        for (int i = 0; i < found.length() && out.size() < 8; i++) {
+        for (int i = 0; i < found.length() && out.size() < 20; i++) {
             JSONObject o = found.optJSONObject(i);
             if (o == null) continue;
             String kind = o.optString("media_type");
@@ -466,8 +467,85 @@ final class Recs {
             add(one, o, kind);
             if (!one.isEmpty()) out.add(one.get(0));
         }
+        rankSearch(out, q);
+        if (out.size() > 8) out = new ArrayList<>(out.subList(0, 8));
         synchronized (searchCache) { searchCache.put(cacheKey, out); }
         return out;
+    }
+
+    /**
+     * Exact title, then a title that starts with the query, then the rest. A documentary, making-of, extra or
+     * special loses to the film. On an installed app beats "Not on your apps". Popularity, then the earlier year.
+     */
+    static int searchOrder(String query, String title, int year, float popularity, boolean onApp,
+                            String titleB, int yearB, float popularityB, boolean onAppB) {
+        int band = Integer.compare(matchBand(query, title), matchBand(query, titleB));
+        if (band != 0) return band;
+        int side = Integer.compare(sidePiece(title, query) ? 1 : 0, sidePiece(titleB, query) ? 1 : 0);
+        if (side != 0) return side;
+        int app = Integer.compare(onApp ? 0 : 1, onAppB ? 0 : 1);
+        if (app != 0) return app;
+        int pop = Float.compare(popularityB, popularity);
+        if (pop != 0) return pop;
+        return Integer.compare(year <= 0 ? Integer.MAX_VALUE : year, yearB <= 0 ? Integer.MAX_VALUE : yearB);
+    }
+
+    static int matchBand(String query, String title) {
+        String q = squash(query);
+        String t = squash(title);
+        if (q.isEmpty() || t.isEmpty()) return 2;
+        if (t.equals(q)) return 0;
+        if (t.startsWith(q) && !sidePiece(title, query)) return 1;
+        return 2;
+    }
+
+    /** Documentary, making-of, extra or special, unless the query itself asks for that. */
+    static boolean sidePiece(String title, String query) {
+        if (title == null) return false;
+        String padded = " " + words(title) + " ";
+        String asked = " " + words(query) + " ";
+        String[] marks = {"documentary", "making of", "behind the scenes", "featurette",
+                "outtake", "outtakes", "extras", "specials", "bonus"};
+        for (String mark : marks) {
+            if (padded.contains(" " + mark + " ") && !asked.contains(mark)) return true;
+        }
+        return false;
+    }
+
+    private static void rankSearch(List<Pick> picks, String query) {
+        picks.sort((a, b) -> searchOrder(query, a.title, a.year, a.popularity, a.pkg != null,
+                b.title, b.year, b.popularity, b.pkg != null));
+    }
+
+    /** Letters and digits only, so "Galaxy Quest!" and "galaxy quest" are the same title. */
+    private static String squash(String s) {
+        String lower = words(s);
+        if (lower.startsWith("the ")) lower = lower.substring(4);
+        StringBuilder b = new StringBuilder(lower.length());
+        for (int i = 0; i < lower.length(); i++) {
+            char c = lower.charAt(i);
+            if (c >= 'a' && c <= 'z' || c >= '0' && c <= '9') b.append(c);
+        }
+        return b.toString();
+    }
+
+    private static String words(String s) {
+        if (s == null) return "";
+        StringBuilder b = new StringBuilder(s.length());
+        boolean space = false;
+        for (int i = 0; i < s.length(); i++) {
+            char c = Character.toLowerCase(s.charAt(i));
+            if (c >= 'a' && c <= 'z' || c >= '0' && c <= '9') {
+                b.append(c);
+                space = false;
+            } else if (!space && b.length() > 0) {
+                b.append(' ');
+                space = true;
+            }
+        }
+        int n = b.length();
+        if (n > 0 && b.charAt(n - 1) == ' ') b.setLength(n - 1);
+        return b.toString();
     }
 
     /** Which app has this title, if it isn't known yet. Blocking. Does not spend a Watchmode or Wikidata lookup. */
@@ -924,6 +1002,7 @@ final class Recs {
         p.poster = o.isNull("poster_path") ? "" : o.optString("poster_path");
         p.overview = o.optString("overview").trim();
         p.year = yearOf(o.optString(kind.equals("movie") ? "release_date" : "first_air_date", ""));
+        p.popularity = (float) o.optDouble("popularity", 0);
         list.add(p);
     }
 
@@ -1535,21 +1614,33 @@ final class Recs {
             Bitmap poster = null;
             File pf = posterFile(p);
             if (pf != null && pf.exists()) poster = decodeCover(pf, 240, 360);
+            boolean stored = false;
             synchronized (cinemaPlates) {
                 cinemaReady.add(p.backdrop);
-                if (plate != null) cinemaPlates.put(p.backdrop, plate);
-                if (poster != null) cinemaPosters.put(p.backdrop, poster);
-                while (cinemaPlates.size() > 4) {
+                if (plate != null && cinemaPlates.get(p.backdrop) == null) {
+                    cinemaPlates.put(p.backdrop, plate);
+                    stored = true;
+                }
+                if (poster != null && cinemaPosters.get(p.backdrop) == null) {
+                    cinemaPosters.put(p.backdrop, poster);
+                    stored = true;
+                }
+                // A row shows up to eight posters. Dropping one recycles a bitmap still on screen, the next
+                // draw asks for it again, and the cards flicker. Keep a full row and let the old ones go by age.
+                while (cinemaPlates.size() > 16) {
                     String eldest = cinemaPlates.keySet().iterator().next();
-                    Bitmap gone = cinemaPlates.remove(eldest);
-                    if (gone != null && !gone.isRecycled()) gone.recycle();
-                    Bitmap row = cinemaPosters.remove(eldest);
-                    if (row != null && !row.isRecycled()) row.recycle();
-                    cinemaReady.remove(eldest);
+                    cinemaPlates.remove(eldest);
+                    if (!cinemaPosters.containsKey(eldest)) cinemaReady.remove(eldest);
+                }
+                while (cinemaPosters.size() > 16) {
+                    String eldest = cinemaPosters.keySet().iterator().next();
+                    cinemaPosters.remove(eldest);
+                    if (!cinemaPlates.containsKey(eldest)) cinemaReady.remove(eldest);
                 }
             }
-            notifyListeners();
+            if (stored) notifyListeners();
         } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            synchronized (cinemaPlates) { cinemaReady.add(p.backdrop); }
             AppLog.w("search image: " + e.getMessage());
         }
     }

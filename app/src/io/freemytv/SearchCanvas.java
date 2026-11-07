@@ -70,6 +70,7 @@ final class SearchCanvas extends View {
     private final List<String> chips = new ArrayList<>();
     private final List<Hit> hits = new ArrayList<>();
     private final RectF tmp = new RectF();
+    private final RectF fit = new RectF();
     private final Rect crop = new Rect();
     private final RectF screen = new RectF();
     private final TextPaint replyTp = new TextPaint(Paint.ANTI_ALIAS_FLAG);
@@ -361,9 +362,12 @@ final class SearchCanvas extends View {
         if (bg == null) bg = new LinearGradient(0, 0, 0, h, Tokens.bgTop(night), Tokens.bgBottom(night), Shader.TileMode.CLAMP);
         if (scrimX != null) return;
         int edge = Tokens.cinemaScrim(night);
+        int mid = Tokens.cinemaScrimsoft(night);
         int clear = edge & 0x00FFFFFF;
-        scrimX = new LinearGradient(0, 0, w * 0.78f, 0, edge, clear, Shader.TileMode.CLAMP);
-        scrimY = new LinearGradient(0, h * 0.42f, 0, h, clear, edge, Shader.TileMode.CLAMP);
+        scrimX = new LinearGradient(0, 0, w, 0, new int[] {edge, edge, mid, clear},
+                new float[] {0f, 0.42f, 0.72f, 1f}, Shader.TileMode.CLAMP);
+        scrimY = new LinearGradient(0, h * 0.46f, 0, h, new int[] {clear, mid, edge},
+                new float[] {0f, 0.4f, 1f}, Shader.TileMode.CLAMP);
     }
 
     /** Focused backdrop, cross-fading to the next one. Returns true while the fade is still moving. */
@@ -783,22 +787,29 @@ final class SearchCanvas extends View {
         Bitmap poster = null;
         if (!demo && hit.pick != null) poster = Recs.get(getContext()).cinemaPoster(hit.pick);
         if (hit.app && hit.art != null) poster = hit.art;
+        if (hit.app) {
+            c.save();
+            c.clipPath(round(tmp, Tokens.RADIUS_CARD * k));
+            fill.setColor(night ? 0xFF16161A : 0xFFE8E8ED);
+            c.drawRect(tmp, fill);
+            if (poster != null) letterbox(c, poster);
+            drawAppName(c, hit);
+            c.restore();
+            return;
+        }
         if (poster != null) {
             imageFill.setShader(null);
             c.save();
             c.clipPath(round(tmp, Tokens.RADIUS_CARD * k));
             cover(c, poster);
-            if (hit.app) drawAppName(c, hit);
             c.restore();
         } else {
             c.save();
             c.clipPath(round(tmp, Tokens.RADIUS_CARD * k));
             fill.setColor(PALETTE[Math.floorMod(tint, PALETTE.length)]);
             c.drawRect(tmp, fill);
-            if (hit.app) drawAppName(c, hit);
             c.restore();
         }
-        if (hit.app) return;
         String badge = badge(hit);
         if (!badge.isEmpty()) {
             labelPaint.setTextSize(18 * k);
@@ -829,13 +840,26 @@ final class SearchCanvas extends View {
         c.drawBitmap(b, crop, tmp, imageFill);
     }
 
+    /** Banner scaled to the card width, centred above the name. The logo is never cropped. */
+    private void letterbox(Canvas c, Bitmap b) {
+        int bw = b.getWidth(), bh = b.getHeight();
+        float nameH = 40 * k;
+        float areaH = tmp.height() - nameH;
+        if (bw < 1 || bh < 1 || tmp.width() < 1 || areaH < 1) return;
+        float scale = Math.min(tmp.width() / bw, areaH / bh);
+        float dw = bw * scale, dh = bh * scale;
+        float left = tmp.left + (tmp.width() - dw) / 2f;
+        float top = tmp.top + (areaH - dh) / 2f;
+        fit.set(left, top, left + dw, top + dh);
+        imageFill.setShader(null);
+        c.drawBitmap(b, null, fit, imageFill);
+    }
+
     private void drawAppName(Canvas c, Hit hit) {
         String name = hit.title == null ? "" : hit.title;
         if (name.isEmpty()) return;
-        plate.setColor(0xCC101014);
-        c.drawRect(tmp.left, tmp.bottom - 36 * k, tmp.right, tmp.bottom, plate);
         labelPaint.setTextSize(18 * k);
-        labelPaint.setColor(0xFFFFFFFF);
+        labelPaint.setColor(Tokens.ink(night));
         c.save();
         c.clipRect(tmp.left + 10 * k, tmp.bottom - 36 * k, tmp.right - 10 * k, tmp.bottom);
         c.drawText(name, tmp.left + 12 * k, tmp.bottom - 14 * k, labelPaint);
