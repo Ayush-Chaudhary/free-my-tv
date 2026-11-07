@@ -6,6 +6,7 @@ import android.graphics.Canvas;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.os.SystemClock;
@@ -29,6 +30,8 @@ final class SearchCanvas extends View {
         String pkg, label;
         boolean app, store, show;
         Recs.Pick pick;
+        /** Installed-app card: TV banner, or the launcher icon. */
+        Bitmap art;
         int year;
         /** Null when a title is on none of the TV's apps. */
         String service;
@@ -67,6 +70,7 @@ final class SearchCanvas extends View {
     private final List<String> chips = new ArrayList<>();
     private final List<Hit> hits = new ArrayList<>();
     private final RectF tmp = new RectF();
+    private final Rect crop = new Rect();
     private final RectF screen = new RectF();
     private final TextPaint replyTp = new TextPaint(Paint.ANTI_ALIAS_FLAG);
     private Paint ink, dim, keyText, hero, meta, plate, fill, imageFill, labelPaint;
@@ -141,6 +145,8 @@ final class SearchCanvas extends View {
     void beginThinking() {
         thinking = true;
         listening = false;
+        keysOn = false;
+        keysAt = 0;
         thinkAt = SystemClock.uptimeMillis();
         hits.clear();
         reply = "";
@@ -505,15 +511,16 @@ final class SearchCanvas extends View {
         int n = BARS.length;
         float width = WAVE_W * k;
         float step = width / n;
-        float thick = Math.max(1.25f, 1.6f * k);
-        float maxH = 28 * k;
-        boolean quiet = mic < 0.08f;
-        float level = quiet ? 0.28f : 0.3f + 0.7f * mic;
+        float thick = Math.max(2f, 2.2f * k);
+        // Idle is already a full D1 row. The mic only lifts the clusters a little further.
+        float level = 0.92f + 0.18f * mic;
+        int ink = Tokens.ink(night);
         for (int i = 0; i < n; i++) {
-            float sway = quiet ? 0.82f + 0.18f * (float) Math.sin(now / 520.0 + i * 0.55) : 1f;
-            float h = Math.max(thick, BARS[i] * sway * level * maxH * 2f);
+            float sway = 0.94f + 0.06f * (float) Math.sin(now / 700.0 + i * 0.45);
+            float h = Math.max(5f * k, BARS[i] * sway * level * 52f * k);
             float left = x + step * i;
-            plate.setColor(BARS[i] > 0.4f ? Tokens.ink(night) : Tokens.inkSecondary(night));
+            int opacity = BARS[i] > 0.45f ? 230 : (BARS[i] > 0.15f ? 200 : 178);
+            plate.setColor(Ui.alpha(ink, opacity / 255f));
             c.drawRoundRect(left, y - h / 2f, left + thick, y + h / 2f, thick, thick, plate);
         }
     }
@@ -775,16 +782,23 @@ final class SearchCanvas extends View {
     private void drawCard(Canvas c, Hit hit, int tint) {
         Bitmap poster = null;
         if (!demo && hit.pick != null) poster = Recs.get(getContext()).cinemaPoster(hit.pick);
+        if (hit.app && hit.art != null) poster = hit.art;
         if (poster != null) {
             imageFill.setShader(null);
             c.save();
             c.clipPath(round(tmp, Tokens.RADIUS_CARD * k));
-            c.drawBitmap(poster, null, tmp, imageFill);
+            cover(c, poster);
+            if (hit.app) drawAppName(c, hit);
             c.restore();
         } else {
+            c.save();
+            c.clipPath(round(tmp, Tokens.RADIUS_CARD * k));
             fill.setColor(PALETTE[Math.floorMod(tint, PALETTE.length)]);
-            c.drawRoundRect(tmp, Tokens.RADIUS_CARD * k, Tokens.RADIUS_CARD * k, fill);
+            c.drawRect(tmp, fill);
+            if (hit.app) drawAppName(c, hit);
+            c.restore();
         }
+        if (hit.app) return;
         String badge = badge(hit);
         if (!badge.isEmpty()) {
             labelPaint.setTextSize(18 * k);
@@ -800,6 +814,32 @@ final class SearchCanvas extends View {
             c.drawText(badge, box.left + 18 * k, top + 14 * k + Ui.halfCap(labelPaint), labelPaint);
             c.restore();
         }
+    }
+
+    /** Centre-crop into the card. No new bitmap. */
+    private void cover(Canvas c, Bitmap b) {
+        int bw = b.getWidth(), bh = b.getHeight();
+        if (bw < 1 || bh < 1 || tmp.width() < 1 || tmp.height() < 1) return;
+        float scale = Math.max(tmp.width() / bw, tmp.height() / bh);
+        int sw = Math.max(1, Math.round(tmp.width() / scale));
+        int sh = Math.max(1, Math.round(tmp.height() / scale));
+        int left = Math.max(0, (bw - sw) / 2);
+        int top = Math.max(0, (bh - sh) / 2);
+        crop.set(left, top, Math.min(bw, left + sw), Math.min(bh, top + sh));
+        c.drawBitmap(b, crop, tmp, imageFill);
+    }
+
+    private void drawAppName(Canvas c, Hit hit) {
+        String name = hit.title == null ? "" : hit.title;
+        if (name.isEmpty()) return;
+        plate.setColor(0xCC101014);
+        c.drawRect(tmp.left, tmp.bottom - 36 * k, tmp.right, tmp.bottom, plate);
+        labelPaint.setTextSize(18 * k);
+        labelPaint.setColor(0xFFFFFFFF);
+        c.save();
+        c.clipRect(tmp.left + 10 * k, tmp.bottom - 36 * k, tmp.right - 10 * k, tmp.bottom);
+        c.drawText(name, tmp.left + 12 * k, tmp.bottom - 14 * k, labelPaint);
+        c.restore();
     }
 
     private final Path clip = new Path();
@@ -825,6 +865,7 @@ final class SearchCanvas extends View {
     }
 
     private boolean drawKeys(Canvas c, long now) {
+        if (thinking || listening) return false;
         float t = ease((now - keysAt) / Tokens.LAYOUT_CINEMA_FADEMS);
         float alpha = keysOn ? t : (keysAt == 0 ? 0 : 1f - t);
         if (alpha <= 0.01f) return false;

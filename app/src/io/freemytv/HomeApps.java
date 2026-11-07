@@ -1058,6 +1058,12 @@ final class HomeApps {
 
     // MARK: - Cards
 
+    /** Search card: the Android TV banner when the app has one, otherwise the launcher icon on a dark card. */
+    static Bitmap searchPoster(Context c, String pkg) {
+        if (pkg == null || pkg.isEmpty()) return null;
+        return appTile(c, null, pkg, 0);
+    }
+
     private static synchronized Bitmap appTile(Context c, String key, String pkg, int brand) {
         String cacheKey = key != null ? key : pkg;
         if (TILES.containsKey(cacheKey)) return TILES.get(cacheKey);

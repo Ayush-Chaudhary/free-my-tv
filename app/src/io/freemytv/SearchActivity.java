@@ -351,6 +351,7 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
                 h.pkg = a[0];
                 h.app = true;
                 h.meta = Ui.tr("Open");
+                h.art = HomeApps.searchPoster(this, a[0]);
                 out.add(h);
             }
         }
