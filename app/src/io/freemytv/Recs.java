@@ -37,6 +37,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -384,6 +385,12 @@ final class Recs {
         return (cut > 0 ? t.substring(0, cut) : t).trim();
     }
 
+    /** The service key ("netflix") of a streaming app's package, or null. */
+    static String serviceKeyOf(String pkg) {
+        for (String[] s : SERVICES) if (s[2].equals(pkg)) return s[1];
+        return null;
+    }
+
     /** Name of the service the pick is on ("Netflix"), or empty. */
     static String serviceName(Pick p) {
         return p == null || p.app == null ? "" : SERVICE_NAME.get(p.app);
@@ -552,6 +559,37 @@ final class Recs {
     void fillService(Pick p) throws Exception {
         if (p == null || p.detailed || p.id <= 0) return;
         fetchDetails(p);
+    }
+
+    private static final String[] NO_APP = new String[0];
+    /** "kind:id:region" -> the SERVICES row of an installed app that streams it (flat rate), or NO_APP. For this session. */
+    private final Map<String, String[]> appCache = new ConcurrentHashMap<>();
+
+    /**
+     * Which installed app streams this title in the TV's region, from TMDB's {@code /watch/providers} with the app's own
+     * key (the assistant Worker doesn't look it up). Sets {@code app} and {@code pkg}, or leaves them null. Blocking.
+     */
+    void fillApp(Pick p) throws Exception {
+        if (p == null || p.id <= 0 || p.pkg != null) return;
+        String kind = "tv".equals(p.kind) ? "tv" : "movie";
+        String cacheKey = kind + ":" + p.id + ":" + REGION;
+        String[] row = appCache.get(cacheKey);
+        if (row == null) {
+            JSONObject all = get("/" + kind + "/" + p.id + "/watch/providers").optJSONObject("results");
+            JSONObject here = all == null ? null : all.optJSONObject(REGION);
+            JSONArray flat = here == null ? null : here.optJSONArray("flatrate");
+            row = NO_APP;
+            for (int i = 0; flat != null && i < flat.length() && row == NO_APP; i++) {
+                JSONObject one = flat.optJSONObject(i);
+                String[] s = one == null ? null : service(one.optString("provider_name"), one.optInt("provider_id"));
+                if (s != null && installed(s[2])) row = s;
+            }
+            appCache.put(cacheKey, row);   // a failed request threw above and is not cached
+        }
+        if (row.length > 0) {
+            p.app = row[1];
+            p.pkg = row[2];
+        }
     }
 
     /** The title's own page, from the link remembered earlier or one lookup. Blocking. */

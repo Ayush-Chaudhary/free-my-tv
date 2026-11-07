@@ -1,15 +1,13 @@
 // Relative CPU of runTurn (Node, not Workers). Fetch is mocked and returns immediately,
-// so the time is our own JS: parse, prompts, ranking, provider matching.
+// so the time is our own JS: parse, prompts, ranking.
 import { readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
-import { flatrateIn } from './src/tmdb.js';
 import { runTurn } from './src/turn.js';
 
 const fx = (name) => JSON.parse(readFileSync(new URL(`./test/fixtures/${name}.json`, import.meta.url), 'utf8'));
 const planFunny = fx('groq-plan-funny');
 const planHinglish = fx('groq-plan-hinglish');
 
-const COUNTRIES = ['AE','AR','AT','AU','BE','BR','CA','CH','CL','CO','CZ','DE','DK','ES','FI','FR','GB','GR','HK','HU','ID','IE','IN','IT','JP','KR','MX','MY','NL','NO','NZ','PH','PL','PT','RO','SE','SG','TH','TR','TW','US','ZA'];
 const PROVIDER_NAMES = ['Netflix','Amazon Prime Video','Disney Plus','Hulu','Max','Apple TV Plus','Paramount Plus','Crunchyroll','YouTube','Peacock','Hotstar','Globoplay'];
 
 function movie(i, extra = {}) {
@@ -60,27 +58,6 @@ function providersCatalog() {
   return { results };
 }
 
-function watchProviders(id) {
-  const results = {};
-  for (const cc of COUNTRIES) {
-    const flatrate = PROVIDER_NAMES.map((name, n) => ({
-      display_priority: n,
-      logo_path: `/p${cc}${n}.jpg`,
-      provider_id: 100 + n,
-      provider_name: name,
-    }));
-    results[cc] = {
-      link: `https://www.themoviedb.org/movie/${id}/watch?locale=${cc}&region=${cc}`,
-      flatrate,
-      rent: flatrate.slice(0, 4),
-      buy: flatrate.slice(0, 4),
-      ads: flatrate.slice(0, 2),
-    };
-  }
-  results.US.flatrate = [{ provider_id: 8, provider_name: 'Netflix', display_priority: 0 }, ...results.US.flatrate];
-  return { id, results };
-}
-
 const chooseEnLive = { reply: 'Here are a few comedies.', picks: [1000, 1001, 1002, 1003].map((id) => ({ id, why: 'a short comedy' })) };
 const chooseHiLive = { reply: 'Here is that film.', picks: [1003, 1000, 1004].map((id) => ({ id, why: 'the one you named' })) };
 const BODIES = {
@@ -93,8 +70,6 @@ const BODIES = {
   empty: JSON.stringify({ page: 1, results: [] }),
   catalog: JSON.stringify(providersCatalog()),
 };
-const WATCH = new Map();
-for (let i = 0; i < 20; i++) WATCH.set(1000 + i, JSON.stringify(watchProviders(1000 + i)));
 
 function response(body, status = 200) {
   return new Response(body, { status, headers: { 'content-type': 'application/json' } });
@@ -119,9 +94,7 @@ function mockFetch(mode) {
       if (q === 'DDLJ') return response(BODIES.empty);
       return response(BODIES.search);
     }
-    fn.providers = (fn.providers || 0) + 1;
-    const id = Number(path.split('/')[3]);
-    return response(WATCH.get(id) || WATCH.get(1000));
+    return response(BODIES.empty);
   };
   return fn;
 }
@@ -148,15 +121,7 @@ function cpuMs(delta) {
   return (delta.user + delta.system) / 1000;
 }
 
-/** One realistic provider body: full JSON.parse against the region slice. */
 function timeParse(iters) {
-  const body = WATCH.get(1000);
-  const full0 = process.cpuUsage();
-  for (let i = 0; i < iters; i++) JSON.parse(body);
-  const full = process.cpuUsage(full0);
-  const slice0 = process.cpuUsage();
-  for (let i = 0; i < iters; i++) flatrateIn(body, 'US');
-  const slice = process.cpuUsage(slice0);
   const discover0 = process.cpuUsage();
   for (let i = 0; i < iters; i++) JSON.parse(BODIES.discover);
   const discover = process.cpuUsage(discover0);
@@ -164,9 +129,6 @@ function timeParse(iters) {
   for (let i = 0; i < iters; i++) JSON.parse(BODIES.chooseEn);
   const groq = process.cpuUsage(groq0);
   return {
-    providerBytes: body.length,
-    fullParseMs: +(cpuMs(full) / iters).toFixed(3),
-    regionSliceMs: +(cpuMs(slice) / iters).toFixed(3),
     discoverParseMs: +(cpuMs(discover) / iters).toFixed(3),
     discoverBytes: BODIES.discover.length,
     groqParseMs: +(cpuMs(groq) / iters).toFixed(3),
@@ -182,7 +144,7 @@ const en = await time('en', iters);
 const hi = await time('hi', iters);
 console.log(JSON.stringify({
   iters,
-  english: { cpuMs: +en.cpuPer.toFixed(3), wallMs: +en.wallPer.toFixed(3), calls: countFetch.n, providerCalls: countFetch.providers || 0, picks: one.body.picks.length },
-  hinglish: { cpuMs: +hi.cpuPer.toFixed(3), wallMs: +hi.wallPer.toFixed(3), calls: hiFetch.n, providerCalls: hiFetch.providers || 0 },
+  english: { cpuMs: +en.cpuPer.toFixed(3), wallMs: +en.wallPer.toFixed(3), calls: countFetch.n, picks: one.body.picks.length },
+  hinglish: { cpuMs: +hi.cpuPer.toFixed(3), wallMs: +hi.wallPer.toFixed(3), calls: hiFetch.n },
   parse: timeParse(iters),
 }, null, 2));

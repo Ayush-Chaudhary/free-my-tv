@@ -256,7 +256,7 @@ In phase 2, the TV app takes each pick's `id` and `kind`, calls TMDB `/{movie|tv
 
 At the same time, `service` is dropped from the Worker's `/v1/turn` response, along with the Worker's provider fetch, slicing and caching code. Discover keeps its `with_watch_providers`, `watch_region` and flatrate filters, so picks still lean toward the TV's services. That's a contract change, so bump the README contract and tests together with the app change.
 
-Not started. Don't do it until phase 2 begins.
+Done in the phase 2 PR: the TV calls the Worker from the Cinema search screen and fills in `service` itself.
 
 ## Sources
 

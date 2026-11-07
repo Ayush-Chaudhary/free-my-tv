@@ -54,7 +54,7 @@ const CHOOSE_BEFORE = `You choose what to watch for a person, from a list of can
 
 Return {"reply": string, "picks": [{"id": number, "why": string}]}.
 - picks: 3 to 5 candidates, best first, each id copied from the list. Never use an id that is not in the list.
-  Prefer candidates with a "service". "why" is 3 to 6 words (for example "90-minute time-loop comedy").
+  "why" is 3 to 6 words (for example "90-minute time-loop comedy").
 - reply: at most two short sentences, spoken aloud by the TV, so no lists, symbols or ids. Always write it in
   plain, simple English, even when the request was Hinglish or Hindi (the TV's language is `;
 

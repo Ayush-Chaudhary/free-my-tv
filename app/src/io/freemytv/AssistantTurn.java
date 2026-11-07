@@ -8,8 +8,8 @@ import java.util.List;
 
 /**
  * One reply from the assistant Worker (v1), with no network of its own.
- * Phase 2 parses the POST /v1/turn body with {@link #fromJson} and hands it to {@code SearchActivity.present}.
- * The TV fills {@link Pick#service} itself before that (null when the title is on none of the installed apps).
+ * Parses the POST /v1/turn body with {@link #fromJson} and hands it to {@code SearchActivity.present}.
+ * The TV fills {@link Pick#service} and {@link Pick#pkg} itself before that (null when the title is on none of the installed apps).
  * {@code reply} is plain text, at most {@link #REPLY_MAX} characters, and arrives all at once: the screen types it out.
  */
 final class AssistantTurn {
@@ -31,8 +31,8 @@ final class AssistantTurn {
         String kind = "movie";
         String title = "";
         int year;
-        /** Null when the title is not on an app the TV has. */
-        String service;
+        /** Set by the TV (Recs.fillApp), never by the Worker: the installed app's service key and package, or null. */
+        String service, pkg;
         String why = "";
     }
 
@@ -42,7 +42,7 @@ final class AssistantTurn {
         return s.length() <= REPLY_MAX ? s : s.substring(0, REPLY_MAX);
     }
 
-    /** Worker JSON. Missing fields stay empty. A JSON null {@code service} stays null. */
+    /** Worker JSON. Missing fields stay empty. The Worker sends no {@code service}; one that does is ignored. */
     static AssistantTurn fromJson(JSONObject o) {
         AssistantTurn t = new AssistantTurn();
         if (o == null) return t;
@@ -60,8 +60,6 @@ final class AssistantTurn {
             p.kind = one.optString("kind", "movie");
             p.title = one.optString("title", "");
             p.year = one.optInt("year");
-            p.service = one.isNull("service") ? null : one.optString("service", null);
-            if (p.service != null && p.service.isEmpty()) p.service = null;
             p.why = one.optString("why", "");
             t.picks.add(p);
         }

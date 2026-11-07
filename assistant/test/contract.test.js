@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { handle } from '../src/handler.js';
 import { REPLY_MAX } from '../src/turn.js';
-import { ask, fakeFetch, funnyRoutes, makeEnv, SERVICES } from './helpers.js';
+import { ask, fakeFetch, funnyRoutes, makeEnv } from './helpers.js';
 
 const run = async (body, fetch, env) => {
   const res = await handle(ask(body), env || (await makeEnv()), { fetch, cache: new Map() });
@@ -17,7 +17,7 @@ test('a funny movie under 100 minutes: 3-5 real picks, the contract, the filters
   assert.equal(json.intent, 'recommend');
   assert.ok(json.picks.length >= 3 && json.picks.length <= 5, `${json.picks.length} picks`);
   for (const p of json.picks) {
-    assert.deepEqual(Object.keys(p).sort(), ['id', 'kind', 'service', 'title', 'why', 'year']);
+    assert.deepEqual(Object.keys(p).sort(), ['id', 'kind', 'title', 'why', 'year']);
     assert.ok(p.why.length > 0 && p.why.length <= 60);
   }
   // the discover call carries the runtime, the genre and the TV's providers in the region
@@ -27,31 +27,10 @@ test('a funny movie under 100 minutes: 3-5 real picks, the contract, the filters
   assert.equal(d.search.get('watch_region'), 'US');
   assert.equal(d.search.get('with_watch_monetization_types'), 'flatrate');
   assert.deepEqual(d.search.get('with_watch_providers').split('|').map(Number).sort((a, b) => a - b), [8, 9, 15, 337, 350, 531, 1899]);
-  const providerCalls = f.calls.filter((c) => /\/(movie|tv)\/\d+\/watch\/providers$/.test(c.path));
-  assert.ok(providerCalls.length <= 6, `${providerCalls.length} provider lookups`);
+  assert.ok(!f.calls.some((c) => /\/(movie|tv)\/\d+\/watch\/providers$/.test(c.path)), 'the TV looks up each title\'s apps, not the Worker');
   assert.ok(f.calls.length < 50, `${f.calls.length} subrequests`);
   assert.equal(d.search.get('api_key'), 'tmdb-test-key');
   assert.equal(f.groqLeft(), 0);
-});
-
-test('services come only from the request, in the region, and "Channel" subscriptions never count', async () => {
-  const f = fakeFetch({ groq: ['groq-plan-funny', 'groq-choose-funny'], tmdb: funnyRoutes() });
-  const { json } = await run({ query: 'a funny movie', services: ['netflix'] }, f);
-  const byTitle = Object.fromEntries(json.picks.map((p) => [p.title, p.service]));
-  assert.equal(byTitle['Hot Fuzz'], 'netflix');
-  assert.equal(byTitle['Palm Springs'], null);   // on Hulu and Prime here, but the TV only has Netflix
-  assert.equal(byTitle['Game Night'], null);
-  const all = await run({ query: 'a funny movie' }, fakeFetch({ groq: ['groq-plan-funny', 'groq-choose-funny'], tmdb: funnyRoutes() }));
-  const svc = Object.fromEntries(all.json.picks.map((p) => [p.title, p.service]));
-  assert.equal(svc['Palm Springs'], 'hulu');
-  assert.equal(svc['Game Night'], 'max');
-  assert.ok(all.json.picks.every((p) => p.service === null || SERVICES.includes(p.service)));
-});
-
-test('a title only rentable has no service', async () => {
-  const f = fakeFetch({ groq: ['groq-plan-funny', { reply: 'Try these.', picks: [{ id: 290250, why: 'buddy detective comedy' }, { id: 587792, why: 'time loop' }, { id: 4638, why: 'spoof' }] }], tmdb: funnyRoutes() });
-  const { json } = await run({ query: 'a funny movie' }, f);
-  assert.equal(json.picks.find((p) => p.title === 'The Nice Guys').service, null);
 });
 
 test('open_app returns the app only when the TV has it', async () => {
