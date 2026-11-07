@@ -39,7 +39,9 @@ export function genreIds(names, kind) {
 export class Tmdb {
   constructor(env, fetchFn, stats, cache) {
     this.env = env;
-    this.fetch = fetchFn;
+    // Workers' fetch throws if it is called as a method (`this` would be the Tmdb instance).
+    const impl = fetchFn ?? globalThis.fetch;
+    this.fetch = (...args) => impl(...args);
     this.stats = stats;
     this.cache = cache;
   }

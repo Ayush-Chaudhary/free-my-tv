@@ -206,6 +206,37 @@ test('a plan with genres as an object, and a TMDB row missing genre_ids, does no
   assert.ok(json.picks.length >= 3);
 });
 
+test('the global fetch is called with a free this, not the client instance', async () => {
+  const original = globalThis.fetch;
+  let sawTmdb = false;
+  let sawGroq = false;
+  globalThis.fetch = function (url) {
+    if (this !== undefined && this !== globalThis) {
+      throw new TypeError('Illegal invocation: function called with incorrect `this` reference');
+    }
+    const host = new URL(url).host;
+    if (host === 'api.groq.com') {
+      sawGroq = true;
+      const plan = { intent: 'recommend', searches: ['a funny movie'], discover: null, like: null, reply: '' };
+      return new Response(JSON.stringify(gptOss(JSON.stringify(plan))), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (host === 'api.themoviedb.org') {
+      sawTmdb = true;
+      return new Response(JSON.stringify({ results: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    throw new Error('unexpected host ' + host);
+  };
+  try {
+    const { res, json } = await run({ query: 'a funny movie' }, undefined);
+    assert.equal(res.status, 200);
+    assert.equal(json.intent, 'search');
+    assert.equal(sawGroq, true);
+    assert.equal(sawTmdb, true);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test('similarity: sound-alike spellings of Indian titles score high, unrelated ones low', () => {
   assert.ok(similarity('dil vale dulhania le jayange', 'Dilwale Dulhania Le Jayenge') > 0.8);
   assert.ok(similarity('kabhi khushi kabhie gham', 'Kabhi Khushi Kabhie Gham') > 0.95);

@@ -87,8 +87,10 @@ function groqDetail(body) {
 async function once(model, messages, { env, fetch, timeoutMs, maxTokens }) {
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  // Call fetch as a free function. A method call sets `this` to the caller and Workers rejects that.
+  const http = (...args) => fetch(...args);
   try {
-    const res = await fetch(URL, {
+    const res = await http(URL, {
       method: 'POST',
       headers: { authorization: `Bearer ${env.GROQ_KEY}`, 'content-type': 'application/json' },
       body: JSON.stringify({
