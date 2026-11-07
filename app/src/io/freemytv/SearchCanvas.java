@@ -2,13 +2,16 @@ package io.freemytv;
 
 import android.content.Context;
 import android.graphics.Bitmap;
-import android.graphics.BitmapShader;
 import android.graphics.Canvas;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.Shader;
-import android.text.TextUtils;
+import android.os.SystemClock;
+import android.text.Layout;
+import android.text.StaticLayout;
+import android.text.TextPaint;
 import android.view.KeyEvent;
 import android.view.View;
 
@@ -16,8 +19,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Search drawn on one canvas: keyboard on the left, results on the right, both themes.
- * The activity owns the TMDB request and the apps list.
+ * Search on one canvas, in the Cinema layout: a glass pill, the focused title's backdrop, and a poster row.
+ * The keyboard is hidden until OK on the pill, so results use the full width. Both themes.
+ * The activity owns the TMDB request. Nothing here calls the assistant Worker.
  */
 final class SearchCanvas extends View {
     static final class Hit {
@@ -25,6 +29,10 @@ final class SearchCanvas extends View {
         String pkg, label;
         boolean app, store, show;
         Recs.Pick pick;
+        int year;
+        /** Null when a title is on none of the TV's apps. */
+        String service;
+        String why = "", length = "";
     }
 
     interface Host {
@@ -35,40 +43,54 @@ final class SearchCanvas extends View {
         void cancelListen();
     }
 
-    private static final int KEY = 0, CHIP = 1, RESULT = 2, ACTION = 3;
+    private static final int BAR = 0, KEY = 1, CHIP = 2, BUTTON = 3, POSTER = 4;
     private static final String LETTERS = "abcdefghijklmnopqrstuvwxyz1234567890";
-    private static final int[][] PALETTE = {
-            {0xFF1B3A5F, 0xFF4A7AB5},
-            {0xFFC45C26, 0xFF2C3E6B},
-            {0xFF6B1D5C, 0xFFC43B8C},
-            {0xFF3A4450, 0xFF8A939E},
-            {0xFF0E7490, 0xFF1AA6B0},
-            {0xFF8E1010, 0xFFC81E1E}
+    private static final int[] PALETTE = {
+            0xFF1B3A5F, 0xFFC45C26, 0xFF6B1D5C, 0xFF3A4450, 0xFF0E7490, 0xFF8E1010
+    };
+    /** A quiet waveform shape, scaled by the smoothed mic level. */
+    private static final float[] WAVE = {
+            0.15f, 0.28f, 0.18f, 0.42f, 0.22f, 0.55f, 0.3f, 0.7f, 0.38f, 0.85f, 0.45f, 1f,
+            0.5f, 0.82f, 0.4f, 0.95f, 0.48f, 0.72f, 0.34f, 0.6f, 0.28f, 0.5f, 0.22f, 0.36f, 0.16f
     };
 
     private final Host host;
     private final List<Key> keys = new ArrayList<>();
     private final List<String> chips = new ArrayList<>();
-    private final List<String> posters = new ArrayList<>();
     private final List<Hit> hits = new ArrayList<>();
     private final RectF tmp = new RectF();
-    /** Voice control beside the field. Empty unless the mic glyph loaded, so a missing picture is not an empty circle. */
-    private final RectF voice = new RectF();
-    private final Spring spring = new Spring(0.22f, 0.82f, 1);
-    private Paint ink, dim, keyText, title, meta, plate, fill, artText, fieldPaint, imageFill;
+    private final RectF screen = new RectF();
+    private final Path wave = new Path();
+    private final TextPaint replyTp = new TextPaint(Paint.ANTI_ALIAS_FLAG);
+    private Paint ink, dim, keyText, hero, meta, plate, fill, imageFill, wavePaint, labelPaint;
     private final Recs.Listener imagesReady = new Recs.Listener() {
         @Override public void onRecs() { if (!demo) postInvalidateOnAnimation(); }
     };
-    private Shader bg;
+    private Shader bg, scrimX, scrimY;
     private float k = 1;
     private int w, h;
-    private int zone = KEY, index;
+    private int zone = BAR, index, titleIndex;
     private String query = "";
     private String status = "";
     private String reply = "";
+    private String listenCaption = "", thinkingLabel = "";
+    private int labelGen = -1;
+    private String lineKey = "\u0000", line1 = "", lineHead = "", lineTail = "";
+    private String openLabel = "", emptyLine = "";
+    private int openFor = -2;
+    private String yearLabel = "";
+    private int yearFor = Integer.MIN_VALUE;
     private String demoShot = "";
-    private boolean listening, night = true, demo;
-    private long last;
+    private boolean listening, thinking, night = true, demo, keysOn;
+    private float mic;
+    private int slideDir = 1;
+    private long listenAt, thinkAt, revealAt, focusAt, keysAt, plateAt;
+    private boolean plateFading;
+    private Bitmap plateNow, plateNext;
+    private StaticLayout replyLayout;
+    private int replyBuilt = -1;
+    private boolean replyNight;
+    private float replyWidth;
 
     SearchCanvas(Context context, Host host) {
         super(context);
@@ -81,6 +103,8 @@ final class SearchCanvas extends View {
         if (this.night == night && bg != null) return;
         this.night = night;
         bg = null;
+        scrimX = null;
+        replyBuilt = -1;
         invalidate();
     }
 
@@ -89,37 +113,79 @@ final class SearchCanvas extends View {
         invalidate();
     }
 
+    /** SpeechRecognizer RMS, about -2 to 10 dB. Smoothed with an exponential average (alpha 0.25). */
+    void setLevel(float rmsdB) {
+        float n = (rmsdB + 2f) / 12f;
+        if (n < 0f) n = 0f;
+        else if (n > 1f) n = 1f;
+        mic += 0.25f * (n - mic);
+    }
+
     void setListening(boolean on, String partial) {
+        if (on && !listening) listenAt = SystemClock.uptimeMillis();
         listening = on;
+        if (on) thinking = false;
         if (on && partial != null && !partial.isEmpty()) query = partial;
-        status = on ? Ui.tr("Listening…") : "";
+        if (!on) mic = 0;
+        invalidate();
+    }
+
+    /** Skeleton and the thin progress line, for the wait before a reply (at most about 5.5 s). */
+    void beginThinking() {
+        thinking = true;
+        listening = false;
+        thinkAt = SystemClock.uptimeMillis();
+        hits.clear();
+        reply = "";
+        status = "";
+        replyBuilt = -1;
+        if (!keysOn) {
+            zone = BAR;
+            index = 0;
+        }
         invalidate();
     }
 
     void setIdle(List<String> recent, List<String> popular) {
         chips.clear();
-        posters.clear();
         hits.clear();
         reply = "";
         status = "";
         listening = false;
-        if (recent != null) for (String s : recent) if (s != null && !s.isEmpty()) chips.add(s);
-        if (popular != null) for (String s : popular) if (s != null && !s.isEmpty() && posters.size() < 4) posters.add(s);
-        zone = KEY;
+        thinking = false;
+        if (recent != null) for (String s : recent) if (s != null && !s.isEmpty() && chips.size() < 4) chips.add(s);
+        zone = BAR;
+        index = 0;
+        revealAt = 0;
         invalidate();
     }
 
     void show(List<Hit> found, String status, String reply) {
         hits.clear();
         chips.clear();
-        posters.clear();
         listening = false;
+        thinking = false;
         if (found != null) hits.addAll(found);
         this.status = status == null ? "" : status;
-        this.reply = reply == null ? "" : reply;
-        zone = hits.isEmpty() && query.isEmpty() ? KEY : hits.isEmpty() ? ACTION : RESULT;
-        index = 0;
-        spring.snap(1);
+        this.reply = reply == null ? "" : AssistantTurn.clip(reply);
+        replyBuilt = -1;
+        emptyLine = "";
+        openFor = -2;
+        yearFor = Integer.MIN_VALUE;
+        lineKey = "\u0000";
+        titleIndex = 0;
+        if (!keysOn) {
+            if (!hits.isEmpty()) {
+                zone = POSTER;
+                index = 0;
+            } else if (!query.isEmpty()) {
+                zone = BUTTON;
+                index = 0;
+            } else zone = BAR;
+        }
+        revealAt = SystemClock.uptimeMillis();
+        focusAt = revealAt;
+        prefetchAround(0);
         invalidate();
     }
 
@@ -128,11 +194,20 @@ final class SearchCanvas extends View {
         demo = true;
         night = dark;
         bg = null;
+        scrimX = null;
         demoShot = shot == null ? "idle" : shot;
         AppLog.w("demo search " + demoShot);
         if (demoShot.equals("listening")) {
-            query = "funny shows about a small";
+            query = "funny sci-fi movies like Galaxy Quest";
             setListening(true, query);
+            mic = 0.55f;
+            applyDemoFocus();
+            return;
+        }
+        if (demoShot.equals("thinking")) {
+            query = "Funny sci-fi movies like Galaxy Quest";
+            beginThinking();
+            thinkAt = SystemClock.uptimeMillis() - 1800;
             applyDemoFocus();
             return;
         }
@@ -147,44 +222,29 @@ final class SearchCanvas extends View {
             List<String> recent = new ArrayList<>();
             recent.add("Hollow Pines");
             recent.add("Northbound");
-            recent.add("Tubeview");
-            List<String> popular = new ArrayList<>();
-            popular.add("The Lantern Coast");
-            popular.add("Velvet Static");
-            popular.add("Silver Ridge");
-            popular.add("Kite Season");
-            setIdle(recent, popular);
+            setIdle(recent, null);
             applyDemoFocus();
             return;
         }
-        query = demoShot.equals("reply") ? "is tidewater nights a movie or a show" : "tide";
+        query = "Funny sci-fi movies like Galaxy Quest";
         List<Hit> list = new ArrayList<>();
-        list.add(titleHit("Tidewater Nights", "Show · Limited series · 6 episodes · Streamly", true));
-        list.add(titleHit("The Lantern Coast", "Show · Streamly", true));
-        list.add(titleHit("Kite Season", "Movie · Orchard", false));
-        Hit open = new Hit();
-        open.title = "Tubeview";
-        open.meta = Ui.tr("Open");
-        open.app = true;
-        open.label = "Tubeview";
-        list.add(open);
-        Hit store = new Hit();
-        store.title = "Tidepool";
-        store.meta = Ui.tr("Get from Play Store");
-        store.store = true;
-        store.label = "Tidepool";
-        list.add(store);
-        String line = demoShot.equals("reply")
-                ? Ui.trf("It's a show: {title}.", "title", "Tidewater Nights") : "";
-        String note = line.isEmpty() ? "" : Ui.tr("Also said aloud · the title is below");
-        show(list, note, line);
+        list.add(sample("Galaxy Quest", 1999, "1h 42m", "Prime Video", "Sci-fi fans become the crew for real", false));
+        list.add(sample("Palm Springs", 2020, "1h 30m", "Hulu", "A time-loop wedding weekend", false));
+        list.add(sample("Paul", 2011, "1h 44m", "Peacock", "Two nerds and a small green guest", false));
+        list.add(sample("The Hitchhiker's Guide to the Galaxy", 2005, "1h 49m", "Disney+", "Don't panic", false));
+        Hit missing = sample("Spaceballs", 1987, "1h 36m", null, "A parody that isn't on your apps right now", false);
+        list.add(missing);
+        show(list, "", "Here are five sci-fi comedies with Galaxy Quest's mix of heart and parody.");
         applyDemoFocus();
     }
 
-    private static Hit titleHit(String title, String meta, boolean show) {
+    private static Hit sample(String title, int year, String length, String service, String why, boolean show) {
         Hit h = new Hit();
         h.title = title;
-        h.meta = meta;
+        h.year = year;
+        h.length = length;
+        h.service = service;
+        h.why = why;
         h.show = show;
         return h;
     }
@@ -203,30 +263,39 @@ final class SearchCanvas extends View {
         w = width;
         h = height;
         k = w / 1920f;
+        screen.set(0, 0, w, h);
         boolean dark = night;
         ink = Ui.text(Ui.semibold, Tokens.TYPE_BODY * k, Tokens.ink(dark));
         dim = Ui.text(Ui.medium, Tokens.TYPE_CAPTION * k, Tokens.inkSecondary(dark));
         keyText = Ui.text(Ui.medium, 32 * k, Tokens.ink(dark));
         keyText.setTextAlign(Paint.Align.CENTER);
-        title = Ui.text(Ui.semibold, Tokens.TYPE_ROWTITLE * k, Tokens.ink(dark));
+        hero = Ui.text(Ui.semibold, Tokens.LAYOUT_CINEMA_TITLE * k, Tokens.ink(dark));
+        hero.setLetterSpacing(-0.02f);
         meta = Ui.text(Ui.medium, Tokens.TYPE_CAPTION * k, Tokens.inkSecondary(dark));
-        fieldPaint = Ui.text(Ui.medium, 40 * k, Tokens.ink(dark));
-        artText = Ui.text(Ui.semibold, 26 * k, 0xFFFFFFFF);
-        artText.setTextAlign(Paint.Align.LEFT);
+        labelPaint = Ui.text(Ui.medium, 26 * k, Tokens.ink(dark));
         plate = new Paint(Paint.ANTI_ALIAS_FLAG);
         fill = new Paint(Paint.ANTI_ALIAS_FLAG);
         imageFill = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+        wavePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        wavePaint.setStyle(Paint.Style.STROKE);
+        wavePaint.setStrokeCap(Paint.Cap.ROUND);
+        wavePaint.setStrokeJoin(Paint.Join.ROUND);
+        replyTp.setTypeface(Ui.medium);
+        replyTp.setTextSize(Tokens.LAYOUT_CINEMA_REPLY * k);
+        replyBuilt = -1;
         layoutKeys();
         bg = null;
+        scrimX = null;
         applyDemoFocus();
     }
 
     private void applyDemoFocus() {
-        if (!demo || keys.isEmpty() || demoShot.isEmpty()) return;
-        if (demoShot.equals("idle")) { zone = KEY; index = LETTERS.indexOf('t'); }
-        else if (demoShot.equals("empty")) { zone = ACTION; index = 0; }
-        else if (demoShot.equals("listening")) { zone = KEY; index = keys.size(); }
-        else { zone = RESULT; index = 0; }
+        if (!demo || demoShot.isEmpty()) return;
+        if (demoShot.equals("empty")) { zone = BUTTON; index = 0; }
+        else if (demoShot.equals("listening") || demoShot.equals("thinking") || demoShot.equals("idle")) {
+            zone = BAR;
+            index = 0;
+        } else { zone = POSTER; index = 0; titleIndex = 0; }
     }
 
     private void layoutKeys() {
@@ -236,8 +305,7 @@ final class SearchCanvas extends View {
         float left = 80 * k, top = 220 * k;
         for (int i = 0; i < LETTERS.length(); i++) {
             int col = i % 6, row = i / 6;
-            keys.add(new Key(String.valueOf(LETTERS.charAt(i)), Key.CHAR,
-                    left + col * sx, top + row * sy, kw, kh));
+            keys.add(new Key(String.valueOf(LETTERS.charAt(i)), Key.CHAR, left + col * sx, top + row * sy, kw, kh));
         }
         float y = top + 6 * sy;
         keys.add(new Key("space", Key.SPACE, left, y, 312 * k, kh));
@@ -247,463 +315,601 @@ final class SearchCanvas extends View {
 
     @Override protected void onDraw(Canvas c) {
         if (w == 0 || ink == null) return;
-        long now = System.nanoTime();
-        float dt = last == 0 ? 1 / 60f : Math.min(0.05f, (now - last) / 1e9f);
-        last = now;
-        if (spring.step(dt) || listening) postInvalidateOnAnimation();
-        if (bg == null) bg = new LinearGradient(0, 0, 0, h, Tokens.bgTop(night), Tokens.bgBottom(night), Shader.TileMode.CLAMP);
+        long now = SystemClock.uptimeMillis();
+        if (labelGen != Ui.generation) {
+            labelGen = Ui.generation;
+            listenCaption = Ui.tr("Release the mic button to search").toUpperCase(Ui.locale());
+            thinkingLabel = Ui.tr("Thinking").toUpperCase(Ui.locale());
+            lineKey = "\u0000";
+            openFor = -2;
+            yearFor = Integer.MIN_VALUE;
+            emptyLine = "";
+        }
+        ensureBackground();
         fill.setShader(bg);
-        c.drawRect(0, 0, w, h, fill);
+        c.drawRect(screen, fill);
         fill.setShader(null);
+        boolean alive = false;
+        if (listening || thinking || !hits.isEmpty()) alive |= drawPlates(c, now);
+        if (listening) alive |= drawDim(c, now);
         ink.setColor(Tokens.ink(night));
         dim.setColor(Tokens.inkSecondary(night));
-        keyText.setColor(Tokens.ink(night));
-        title.setColor(Tokens.ink(night));
+        hero.setColor(Tokens.ink(night));
         meta.setColor(Tokens.inkSecondary(night));
-        fieldPaint.setColor(Tokens.ink(night));
-        layoutVoice();
-        drawField(c);
-        boolean dimKb = listening || !hits.isEmpty() || !reply.isEmpty();
-        if (dimKb) c.saveLayerAlpha(0, 0, w, h, 82);
-        for (int i = 0; i < keys.size(); i++) drawKey(c, keys.get(i), !dimKb && zone == KEY && i == index);
-        if (dimKb) c.restore();
-        drawMic(c, listening || (zone == KEY && index == keys.size()));
-        if (listening) {
-            drawOrb(c, now);
-            return;
+        labelPaint.setColor(Tokens.ink(night));
+        drawPill(c, now);
+        if (listening) alive = true;
+        else if (thinking) {
+            drawThinking(c, now);
+            alive = now - thinkAt < Tokens.LAYOUT_CINEMA_THINKMS;
+        } else if (!hits.isEmpty() || !reply.isEmpty() || !status.isEmpty()) alive |= drawAnswer(c, now);
+        else drawIdle(c);
+        alive |= drawKeys(c, now);
+        if (alive) postInvalidateOnAnimation();
+    }
+
+    private void ensureBackground() {
+        if (bg == null) bg = new LinearGradient(0, 0, 0, h, Tokens.bgTop(night), Tokens.bgBottom(night), Shader.TileMode.CLAMP);
+        if (scrimX != null) return;
+        int edge = Tokens.cinemaScrim(night);
+        int clear = edge & 0x00FFFFFF;
+        scrimX = new LinearGradient(0, 0, w * 0.78f, 0, edge, clear, Shader.TileMode.CLAMP);
+        scrimY = new LinearGradient(0, h * 0.42f, 0, h, clear, edge, Shader.TileMode.CLAMP);
+    }
+
+    /** Focused backdrop, cross-fading to the next one. Returns true while the fade is still moving. */
+    private boolean drawPlates(Canvas c, long now) {
+        Hit focus = focusedHit();
+        Bitmap want = plateFor(focus);
+        if (want != null && want != plateNow && want != plateNext) {
+            if (plateNow == null) plateNow = want;
+            else {
+                plateNext = want;
+                plateAt = now;
+                plateFading = true;
+            }
         }
-        if (query.isEmpty()) drawIdle(c);
-        else drawResults(c);
+        int a = 255;
+        if (!listening && !thinking && revealAt > 0) {
+            float t = ease((now - revealAt) / Tokens.LAYOUT_CINEMA_BACKDROPMS);
+            a = (int) (255 * t);
+        }
+        drawPlate(c, plateNow, a);
+        boolean moving = false;
+        if (plateFading && plateNext != null) {
+            float t = ease((now - plateAt) / Tokens.LAYOUT_CINEMA_FADEMS);
+            drawPlate(c, plateNext, (int) (a * t));
+            if (t >= 1f) {
+                plateNow = plateNext;
+                plateNext = null;
+                plateFading = false;
+            } else moving = true;
+        }
+        if (plateNow != null && !listening) {
+            fill.setShader(scrimX);
+            c.drawRect(screen, fill);
+            fill.setShader(scrimY);
+            c.drawRect(screen, fill);
+            fill.setShader(null);
+        }
+        return moving || (revealAt > 0 && now - revealAt < Tokens.LAYOUT_CINEMA_BACKDROPMS);
     }
 
-    /** The voice pill's place. Nothing is reserved when the mic picture or its label is missing. */
-    private void layoutVoice() {
-        voice.setEmpty();
-        if (k == 0 || dim == null || Symbols.get(getContext(), "mic") == null) return;
-        String label = Ui.tr("Search by voice");
-        if (label.isEmpty()) return;
-        float saved = dim.getTextSize();
-        dim.setTextSize(28 * k);
-        float icon = 36 * k, gap = 12 * k, pad = 28 * k;
-        float tw = Math.min(dim.measureText(label), 420 * k);
-        float bw = pad + icon + gap + tw + pad;
-        float top = 72 * k, bh = 100 * k;
-        float right = w - 80 * k;
-        voice.set(right - bw, top, right, top + bh);
-        dim.setTextSize(saved);
+    private void drawPlate(Canvas c, Bitmap b, int alpha) {
+        if (b == null || alpha <= 0) return;
+        imageFill.setAlpha(alpha);
+        c.drawBitmap(b, null, screen, imageFill);
+        imageFill.setAlpha(255);
     }
 
-    private void drawField(Canvas c) {
-        float top = 72 * k;
-        float right = voice.width() > 0 ? voice.left - 20 * k : w - 80 * k;
-        tmp.set(80 * k, top, right, top + 100 * k);
+    private Bitmap plateFor(Hit hit) {
+        if (demo || hit == null || hit.pick == null) return null;
+        Recs recs = Recs.get(getContext());
+        int neighbour = titleIndex + (slideDir >= 0 ? 1 : -1);
+        if (neighbour >= 0 && neighbour < hits.size()) recs.prefetchCinema(hits.get(neighbour).pick);
+        return recs.cinemaPlate(hit.pick);
+    }
+
+    private boolean drawDim(Canvas c, long now) {
+        float t = ease((now - listenAt) / 200f);
+        plate.setColor(night ? 0xFF000000 : 0xFFFFFFFF);
+        plate.setAlpha((int) (0.28f * 255 * t));
+        c.drawRect(screen, plate);
+        plate.setAlpha(255);
+        return t < 1f;
+    }
+
+    private void drawPill(Canvas c, long now) {
+        String shown = query.isEmpty() ? Ui.tr("Search movies, shows and apps") : query;
+        String side = listening ? Ui.tr("Listening…") : thinking ? Ui.tr("Searching…") : Ui.tr("OK to edit");
+        labelPaint.setTextSize(26 * k);
+        float sideW = query.isEmpty() && !listening && !thinking ? 0 : labelPaint.measureText(side);
+        float pad = 28 * k;
+        float dot = 14 * k;
+        float gap = 16 * k;
+        float textMax = Math.min(820 * k, w - 200 * k);
+        float barW = pad + dot + gap + Math.min(textMax, labelPaint.measureText(shown)) + (sideW > 0 ? gap + sideW : 0) + pad;
+        barW = Math.max(420 * k, Math.min(barW, w - 160 * k));
+        float bh = Tokens.LAYOUT_CINEMA_BARH * k;
+        float top = Tokens.LAYOUT_CINEMA_BARTOP * k;
+        float left = (w - barW) / 2f;
+        tmp.set(left, top, left + barW, top + bh);
+        plate.setColor(Tokens.cinemaPill(night));
+        c.drawRoundRect(tmp, bh / 2f, bh / 2f, plate);
+        plate.setStyle(Paint.Style.STROKE);
+        plate.setStrokeWidth(Math.max(1f, k));
+        plate.setColor(Tokens.cinemaTrack(night));
+        c.drawRoundRect(tmp, bh / 2f, bh / 2f, plate);
         plate.setStyle(Paint.Style.FILL);
-        plate.setColor(Tokens.glassTop(night));
-        c.drawRoundRect(tmp, 50 * k, 50 * k, plate);
-        if (listening) {
+        if (zone == BAR && !keysOn) {
+            plate.setStrokeWidth(Tokens.FOCUS_RING * k);
             plate.setStyle(Paint.Style.STROKE);
-            plate.setStrokeWidth(4 * k);
-            plate.setColor(0xFFFFFFFF);
-            c.drawRoundRect(tmp, 50 * k, 50 * k, plate);
+            plate.setColor(Tokens.ink(night));
+            c.drawRoundRect(tmp, bh / 2f, bh / 2f, plate);
             plate.setStyle(Paint.Style.FILL);
         }
-        Symbols.draw(getContext(), c, "search", tmp.left + 54 * k, tmp.centerY(), 36 * k, Tokens.inkSecondary(night));
-        String shown = query.isEmpty() ? Ui.tr("Search movies, shows and apps") : query;
-        Paint p = query.isEmpty() ? dim : fieldPaint;
-        if (query.isEmpty()) p.setColor(Tokens.inkTertiary(night));
-        float tx = tmp.left + 96 * k;
-        c.drawText(TextUtils.ellipsize(shown, new android.text.TextPaint(p), tmp.width() - 140 * k, TextUtils.TruncateAt.END).toString(),
-                tx, tmp.centerY() + Ui.halfCap(p), p);
-        if (!query.isEmpty()) {
-            float cx = tx + p.measureText(query.length() > 42 ? shown.substring(0, Math.min(shown.length(), 42)) : shown);
+        float cx = tmp.left + pad + dot / 2f;
+        float breathe = listening ? (float) (0.5 + 0.5 * Math.sin(now * 2 * Math.PI / Tokens.LAYOUT_CINEMA_BREATHEMS)) : 1f;
+        float s = listening ? 1f + 0.15f * breathe : 1f;
+        plate.setColor(Tokens.ink(night));
+        plate.setAlpha(listening ? (int) (180 + 75 * breathe) : 255);
+        c.drawCircle(cx, tmp.centerY(), dot / 2f * s, plate);
+        plate.setAlpha(255);
+        float textLeft = cx + dot / 2f + gap;
+        float textRight = tmp.right - pad - (sideW > 0 ? sideW + gap : 0);
+        labelPaint.setColor(query.isEmpty() ? Tokens.inkTertiary(night) : Tokens.ink(night));
+        c.save();
+        c.clipRect(textLeft, tmp.top, textRight, tmp.bottom);
+        c.drawText(shown, textLeft, tmp.centerY() + Ui.halfCap(labelPaint), labelPaint);
+        c.restore();
+        if (sideW > 0) {
+            labelPaint.setColor(Tokens.inkSecondary(night));
+            c.drawText(side, tmp.right - pad - sideW, tmp.centerY() + Ui.halfCap(labelPaint), labelPaint);
+        }
+        if (listening) drawListening(c);
+    }
+
+    private void drawListening(Canvas c) {
+        float x = Tokens.SPACE_MARGIN * k;
+        float y = 300 * k;
+        hero.setTextSize(Tokens.LAYOUT_CINEMA_TITLE * k);
+        hero.setColor(Tokens.ink(night));
+        splitQuery(hero, w - 2 * x);
+        c.drawText(line1, x, y, hero);
+        if (!lineTail.isEmpty() || !lineHead.isEmpty()) {
+            float tx = x;
+            if (!lineHead.isEmpty()) {
+                c.drawText(lineHead, tx, y + 68 * k, hero);
+                tx += hero.measureText(lineHead);
+            }
+            int full = hero.getAlpha();
+            hero.setAlpha(140);
+            c.drawText(lineTail, tx, y + 68 * k, hero);
+            hero.setAlpha(full);
+        }
+        boolean second = !lineHead.isEmpty() || !lineTail.isEmpty();
+        drawWave(c, x, y + (second ? 120 * k : 56 * k));
+        dim.setColor(Tokens.inkSecondary(night));
+        dim.setLetterSpacing(0.12f);
+        dim.setTextSize(18 * k);
+        c.drawText(listenCaption, x, y + (second ? 176 * k : 110 * k), dim);
+        dim.setLetterSpacing(0);
+        dim.setTextSize(Tokens.TYPE_CAPTION * k);
+    }
+
+    private void drawWave(Canvas c, float x, float y) {
+        wave.rewind();
+        float width = 360 * k;
+        float amp = (6f + 22f * mic) * k;
+        for (int i = 0; i < WAVE.length; i++) {
+            float px = x + width * i / (WAVE.length - 1f);
+            float py = y + (WAVE[i] - 0.5f) * 2f * amp;
+            if (i == 0) wave.moveTo(px, py);
+            else wave.lineTo(px, py);
+        }
+        wavePaint.setStrokeWidth(Math.max(1.5f, 2f * k));
+        wavePaint.setColor(Tokens.inkSecondary(night));
+        c.drawPath(wave, wavePaint);
+    }
+
+    private void drawThinking(Canvas c, long now) {
+        float x = Tokens.SPACE_MARGIN * k;
+        float y = 240 * k;
+        dim.setLetterSpacing(0.16f);
+        dim.setTextSize(18 * k);
+        dim.setColor(Tokens.inkSecondary(night));
+        c.drawText(thinkingLabel, x, y, dim);
+        dim.setLetterSpacing(0);
+        dim.setTextSize(Tokens.TYPE_CAPTION * k);
+        plate.setColor(Tokens.cinemaBone(night));
+        float[] widths = {640 * k, 560 * k, 280 * k};
+        float lineY = y + 36 * k;
+        for (int i = 0; i < widths.length; i++) {
+            tmp.set(x, lineY, x + widths[i], lineY + 18 * k);
+            c.drawRoundRect(tmp, 9 * k, 9 * k, plate);
+            lineY += 34 * k;
+        }
+        float span = Tokens.LAYOUT_CINEMA_THINKMS;
+        float p = ease(Math.min(1f, (now - thinkAt) / span));
+        plate.setColor(Tokens.inkTertiary(night));
+        c.drawRect(x, lineY + 8 * k, x + 360 * k * p, lineY + 11 * k, plate);
+        drawPosterSkeletons(c);
+    }
+
+    private void drawPosterSkeletons(Canvas c) {
+        float pw = Tokens.LAYOUT_CINEMA_POSTERW * k;
+        float ph = Tokens.LAYOUT_CINEMA_POSTERH * k;
+        float gap = 22 * k;
+        float y = Tokens.LAYOUT_CINEMA_POSTERTOP * k;
+        float x = w - Tokens.SPACE_MARGIN * k - 5 * pw - 4 * gap;
+        plate.setColor(Tokens.cinemaBone(night));
+        for (int i = 0; i < 5; i++) {
+            tmp.set(x, y, x + pw, y + ph);
+            c.drawRoundRect(tmp, Tokens.RADIUS_CARD * k, Tokens.RADIUS_CARD * k, plate);
+            x += pw + gap;
+        }
+    }
+
+    /** Reply, title, buttons and the poster row. True while the entrance, the type-out or the focus scale is moving. */
+    private boolean drawAnswer(Canvas c, long now) {
+        float x = Tokens.SPACE_MARGIN * k;
+        float slide = (1f - focusEase(now)) * Tokens.LAYOUT_CINEMA_SLIDE * k * slideDir;
+        float top = 200 * k + slide;
+        boolean moving = false;
+        if (!reply.isEmpty()) moving |= drawReply(c, x, top, now);
+        Hit hit = focusedHit();
+        float y = reply.isEmpty() ? top + 40 * k : top + 150 * k;
+        if (hit != null) {
+            hero.setTextSize(Tokens.LAYOUT_CINEMA_TITLE * k);
+            hero.setColor(Tokens.ink(night));
+            c.save();
+            c.clipRect(x, y - 70 * k, x + 1000 * k, y + 20 * k);
+            c.drawText(hit.title == null ? "" : hit.title, x, y, hero);
+            c.restore();
+            y += 36 * k;
+            y = drawMeta(c, hit, x, y);
+            if (hit.why != null && !hit.why.isEmpty()) {
+                meta.setColor(Tokens.inkSecondary(night));
+                c.save();
+                c.clipRect(x, y - 30 * k, x + 900 * k, y + 10 * k);
+                c.drawText(hit.why, x, y, meta);
+                c.restore();
+                y += 28 * k;
+            }
+            drawResultButtons(c, x, y + 16 * k, now);
+        } else if (hits.isEmpty() && reply.isEmpty()) drawEmpty(c, x, Math.max(y, 360 * k));
+        else if (hits.isEmpty()) drawEmptyActions(c, x, Math.max(y, 360 * k));
+        if (!hits.isEmpty()) moving |= drawPosters(c, now);
+        float fade = Tokens.LAYOUT_CINEMA_FADEMS;
+        float stagger = (hits.size() - 1) * Tokens.LAYOUT_CINEMA_STAGGER;
+        float type = reply.length() * Tokens.LAYOUT_CINEMA_TYPEMS;
+        moving |= now - revealAt < fade + stagger + type;
+        moving |= now - focusAt < fade;
+        return moving;
+    }
+
+    private boolean drawReply(Canvas c, float x, float y, long now) {
+        int n = reply.length();
+        if (revealAt > 0) n = (int) Math.min(reply.length(), (now - revealAt) / Tokens.LAYOUT_CINEMA_TYPEMS);
+        float width = 980 * k;
+        if (replyLayout == null || replyBuilt != n || replyNight != night || replyWidth != width) {
+            replyBuilt = n;
+            replyNight = night;
+            replyWidth = width;
+            replyTp.setColor(Tokens.ink(night));
+            replyTp.setTextSize(Tokens.LAYOUT_CINEMA_REPLY * k);
+            String slice = n >= reply.length() ? reply : reply.substring(0, Math.max(0, n));
+            replyLayout = StaticLayout.Builder.obtain(slice, 0, slice.length(), replyTp, (int) width)
+                    .setMaxLines(3).setAlignment(Layout.Alignment.ALIGN_NORMAL).build();
+        }
+        c.save();
+        c.translate(x, y);
+        replyLayout.draw(c);
+        c.restore();
+        return n < reply.length();
+    }
+
+    private float drawMeta(Canvas c, Hit hit, float x, float y) {
+        meta.setColor(Tokens.inkSecondary(night));
+        float cursor = x;
+        if (hit.year != yearFor) {
+            yearFor = hit.year;
+            yearLabel = hit.year > 0 ? String.valueOf(hit.year) : "";
+        }
+        if (!yearLabel.isEmpty()) {
+            c.drawText(yearLabel, cursor, y, meta);
+            cursor += meta.measureText(yearLabel);
+        }
+        if (hit.length != null && !hit.length.isEmpty()) {
+            if (cursor > x) cursor = dot(c, cursor, y);
+            c.drawText(hit.length, cursor, y, meta);
+            cursor += meta.measureText(hit.length);
+        }
+        String badge = badge(hit);
+        if (!badge.isEmpty()) {
+            if (cursor > x) cursor += 14 * k;
+            drawBadge(c, badge, cursor, y);
+        }
+        return y + 40 * k;
+    }
+
+    private float dot(Canvas c, float x, float y) {
+        meta.setColor(Tokens.inkTertiary(night));
+        c.drawText("  ·  ", x, y, meta);
+        float wDot = meta.measureText("  ·  ");
+        meta.setColor(Tokens.inkSecondary(night));
+        return x + wDot;
+    }
+
+    private void drawBadge(Canvas c, String text, float x, float y) {
+        labelPaint.setTextSize(22 * k);
+        float tw = labelPaint.measureText(text);
+        float h = 36 * k;
+        tmp.set(x, y - h + 8 * k, x + tw + 24 * k, y + 8 * k);
+        boolean missing = Ui.tr("Not on your apps").equals(text);
+        plate.setColor(missing ? Tokens.cinemaBone(night) : Tokens.cinemaPill(night));
+        c.drawRoundRect(tmp, 10 * k, 10 * k, plate);
+        labelPaint.setColor(Tokens.ink(night));
+        c.drawText(text, tmp.left + 12 * k, tmp.centerY() + Ui.halfCap(labelPaint), labelPaint);
+    }
+
+    private String badge(Hit hit) {
+        if (hit.service != null && !hit.service.isEmpty()) return hit.service;
+        if (hit.app) return hit.meta == null ? "" : hit.meta;
+        if (hit.store) return Ui.tr("Get from Play Store");
+        if (hit.pick != null || !demo) return Ui.tr("Not on your apps");
+        return Ui.tr("Not on your apps");
+    }
+
+    private void drawResultButtons(Canvas c, float x, float y, long now) {
+        if (titleIndex != openFor) {
+            openFor = titleIndex;
+            Hit hit = focusedHit();
+            openLabel = hit != null && hit.service != null && !hit.service.isEmpty()
+                    ? Ui.trf("Open in {service}", "service", hit.service) : Ui.tr("Open");
+        }
+        float used = drawButton(c, openLabel, x, y, true, zone == BUTTON && index == 0, now);
+        drawButton(c, Ui.tr("More like this"), x + used + 16 * k, y, false, zone == BUTTON && index == 1, now);
+    }
+
+    private void drawEmpty(Canvas c, float x, float y) {
+        hero.setTextSize(Tokens.TYPE_HEADLINE * k);
+        hero.setColor(Tokens.ink(night));
+        if (status.isEmpty() && emptyLine.isEmpty()) emptyLine = Ui.trf("No matches for “{query}”", "query", query);
+        String line = status.isEmpty() ? emptyLine : status;
+        c.save();
+        c.clipRect(x, y - 60 * k, x + 1100 * k, y + 16 * k);
+        c.drawText(line, x, y, hero);
+        c.restore();
+        hero.setTextSize(Tokens.LAYOUT_CINEMA_TITLE * k);
+        if (status.isEmpty() || status.contains("“")) {
+            meta.setColor(Tokens.inkSecondary(night));
+            c.drawText(Ui.tr("Check the spelling, or try a title, an actor or an app."), x, y + 48 * k, meta);
+        }
+        float bx = x;
+        drawEmptyActions(c, bx, y + 88 * k);
+    }
+
+    private void drawEmptyActions(Canvas c, float x, float y) {
+        float bx = x;
+        String[] labels = {Ui.tr("Try again by voice"), Ui.tr("Ask Google Assistant"), Ui.tr("Clear search")};
+        for (int i = 0; i < labels.length; i++) {
+            float used = drawButton(c, labels[i], bx, y, i == 0, zone == BUTTON && index == i, 0);
+            bx += used + 16 * k;
+        }
+    }
+
+    private float drawButton(Canvas c, String label, float x, float y, boolean primary, boolean focused, long now) {
+        labelPaint.setTextSize(28 * k);
+        float tw = labelPaint.measureText(label);
+        float bw = tw + 56 * k;
+        float bh = 64 * k;
+        float s = focused ? 1f + (Tokens.LAYOUT_CINEMA_FOCUS - 1f) * focusEase(now) : 1f;
+        float cx = x + bw / 2f, cy = y + bh / 2f;
+        tmp.set(cx - bw * s / 2f, cy - bh * s / 2f, cx + bw * s / 2f, cy + bh * s / 2f);
+        int fillColor = primary ? (night ? 0xFFFFFFFF : 0xFF1D1D1F) : Tokens.cinemaPill(night);
+        int text = primary ? (night ? Tokens.INK_LIGHT : 0xFFFFFFFF) : Tokens.ink(night);
+        plate.setColor(fillColor);
+        c.drawRoundRect(tmp, bh / 2f, bh / 2f, plate);
+        if (focused) {
+            plate.setStyle(Paint.Style.STROKE);
+            plate.setStrokeWidth(Tokens.FOCUS_RING * k);
             plate.setColor(Tokens.ink(night));
-            c.drawRoundRect(cx + 6 * k, tmp.centerY() - 23 * k, cx + 9 * k, tmp.centerY() + 23 * k, 2 * k, 2 * k, plate);
+            c.drawRoundRect(tmp, bh / 2f, bh / 2f, plate);
+            plate.setStyle(Paint.Style.FILL);
+        }
+        labelPaint.setColor(text);
+        c.drawText(label, tmp.left + (tmp.width() - tw) / 2f, tmp.centerY() + Ui.halfCap(labelPaint), labelPaint);
+        return bw;
+    }
+
+    private boolean drawPosters(Canvas c, long now) {
+        float pw = Tokens.LAYOUT_CINEMA_POSTERW * k;
+        float ph = Tokens.LAYOUT_CINEMA_POSTERH * k;
+        float gap = 22 * k;
+        int n = Math.min(hits.size(), 8);
+        float rowW = n * pw + (n - 1) * gap;
+        float x = w - Tokens.SPACE_MARGIN * k - rowW;
+        float baseY = Tokens.LAYOUT_CINEMA_POSTERTOP * k;
+        boolean moving = false;
+        for (int i = 0; i < n; i++) {
+            float delay = i * Tokens.LAYOUT_CINEMA_STAGGER;
+            float t = revealAt == 0 ? 1f : ease((now - revealAt - delay) / Tokens.LAYOUT_CINEMA_FADEMS);
+            if (t < 1f) moving = true;
+            boolean focused = zone == POSTER && i == index;
+            float s = focused ? 1f + (Tokens.LAYOUT_CINEMA_FOCUS - 1f) * focusEase(now) : 1f;
+            float rise = (1f - t) * Tokens.LAYOUT_CINEMA_RISE * k;
+            float cx = x + pw / 2f;
+            float cy = baseY + ph / 2f + rise;
+            tmp.set(cx - pw * s / 2f, cy - ph * s / 2f, cx + pw * s / 2f, cy + ph * s / 2f);
+            int save = imageFill.getAlpha();
+            imageFill.setAlpha((int) (255 * t));
+            plate.setAlpha((int) (255 * t));
+            drawCard(c, hits.get(i), i);
+            if (focused && t > 0.2f) {
+                plate.setStyle(Paint.Style.STROKE);
+                plate.setStrokeWidth(Tokens.FOCUS_RING * k);
+                plate.setColor(Tokens.ink(night));
+                c.drawRoundRect(tmp, Tokens.RADIUS_CARD * k, Tokens.RADIUS_CARD * k, plate);
+                plate.setStyle(Paint.Style.FILL);
+            }
+            imageFill.setAlpha(save);
+            plate.setAlpha(255);
+            x += pw + gap;
+        }
+        return moving;
+    }
+
+    private void drawCard(Canvas c, Hit hit, int tint) {
+        Bitmap poster = null;
+        if (!demo && hit.pick != null) poster = Recs.get(getContext()).cinemaPoster(hit.pick);
+        if (poster != null) {
+            imageFill.setShader(null);
+            c.save();
+            c.clipPath(round(tmp, Tokens.RADIUS_CARD * k));
+            c.drawBitmap(poster, null, tmp, imageFill);
+            c.restore();
+        } else {
+            fill.setColor(PALETTE[Math.floorMod(tint, PALETTE.length)]);
+            c.drawRoundRect(tmp, Tokens.RADIUS_CARD * k, Tokens.RADIUS_CARD * k, fill);
+        }
+        String badge = badge(hit);
+        if (!badge.isEmpty()) {
+            labelPaint.setTextSize(18 * k);
+            float tw = labelPaint.measureText(badge);
+            float bw = Math.min(tmp.width() - 16 * k, tw + 16 * k);
+            RectF box = tmp;
+            float top = box.top + 12 * k;
+            plate.setColor(0xCC101014);
+            c.drawRoundRect(box.left + 10 * k, top, box.left + 10 * k + bw, top + 28 * k, 8 * k, 8 * k, plate);
+            labelPaint.setColor(0xFFFFFFFF);
+            c.save();
+            c.clipRect(box.left + 10 * k, top, box.left + 10 * k + bw, top + 28 * k);
+            c.drawText(badge, box.left + 18 * k, top + 14 * k + Ui.halfCap(labelPaint), labelPaint);
+            c.restore();
         }
     }
 
-    /**
-     * Voice control: mic picture and "Search by voice" together, or nothing.
-     * A circle drawn first used to stay on screen when symbols/mic.png failed to load.
-     */
-    private void drawMic(Canvas c, boolean on) {
-        if (voice.width() <= 0 || Symbols.get(getContext(), "mic") == null) return;
-        plate.setStyle(Paint.Style.FILL);
-        plate.setColor(on ? 0xFFFFFFFF : Tokens.glassTop(night));
-        c.drawRoundRect(voice, voice.height() / 2f, voice.height() / 2f, plate);
-        int color = on ? Tokens.INK_LIGHT : Tokens.ink(night);
-        float icon = 36 * k;
-        float cx = voice.left + 28 * k + icon / 2f;
-        Symbols.draw(getContext(), c, "mic", cx, voice.centerY(), icon, color);
-        String label = Ui.tr("Search by voice");
-        float savedSize = dim.getTextSize();
-        int savedColor = dim.getColor();
-        dim.setTextSize(28 * k);
-        dim.setColor(color);
-        float textLeft = cx + icon / 2f + 12 * k;
-        float maxText = voice.right - 28 * k - textLeft;
-        String shown = TextUtils.ellipsize(label, new android.text.TextPaint(dim), Math.max(1, maxText),
-                TextUtils.TruncateAt.END).toString();
-        c.drawText(shown, textLeft, voice.centerY() + Ui.halfCap(dim), dim);
-        dim.setTextSize(savedSize);
-        dim.setColor(savedColor);
-    }
+    private final Path clip = new Path();
 
-    private void drawOrb(Canvas c, long now) {
-        float cx = 1320 * k, cy = 520 * k;
-        float pulse = 1 + 0.03f * (float) Math.sin(now / 2.5e8);
-        int[] rings = {300, 230, 166};
-        for (int i = 0; i < rings.length; i++) {
-            float d = rings[i] * k * (i == 2 ? 1 : pulse);
-            if (i == 2) plate.setColor(0xFFFFFFFF);
-            else plate.setColor(night ? (i == 0 ? 0x14FFFFFF : 0x29FFFFFF) : (i == 0 ? 0x0A1D1D1F : 0x121D1D1F));
-            c.drawCircle(cx, cy, d / 2f, plate);
-        }
-        Symbols.draw(getContext(), c, "mic", cx, cy, 64 * k, Tokens.INK_LIGHT);
-        title.setTextAlign(Paint.Align.CENTER);
-        title.setTextSize(44 * k);
-        title.setColor(Tokens.ink(night));
-        c.drawText(Ui.tr("Listening…"), cx, 744 * k, title);
-        title.setTextSize(Tokens.TYPE_ROWTITLE * k);
-        title.setTextAlign(Paint.Align.LEFT);
-        dim.setTextAlign(Paint.Align.CENTER);
-        c.drawText(Ui.tr("Speak now · Back to cancel"), cx, 800 * k, dim);
-        dim.setTextAlign(Paint.Align.LEFT);
+    private Path round(RectF r, float radius) {
+        clip.rewind();
+        clip.addRoundRect(r, radius, radius, Path.Direction.CW);
+        return clip;
     }
 
     private void drawIdle(Canvas c) {
-        float x0 = 800 * k;
+        float x = Tokens.SPACE_MARGIN * k;
+        float y = 280 * k;
         dim.setColor(Tokens.inkSecondary(night));
-        if (recentButtons()) {
-            c.drawText(Ui.tr("Recent"), x0, 248 * k, dim);
-            float x = x0;
-            for (int i = 0; i < chips.size(); i++) {
-                boolean on = zone == CHIP && i == index;
-                float icon = 28 * k;
-                float tw = dim.measureText(chips.get(i));
-                float wChip = tw + icon + 36 * k + 48 * k;
-                tmp.set(x, 278 * k, x + wChip, 278 * k + 76 * k);
-                plate.setColor(on ? 0xFFFFFFFF : Tokens.glassTop(night));
-                c.drawRoundRect(tmp, 38 * k, 38 * k, plate);
-                int color = on ? Tokens.INK_LIGHT : Tokens.inkSecondary(night);
-                Symbols.draw(getContext(), c, "sync", tmp.left + 28 * k + icon / 2, tmp.centerY(), icon, color);
-                Paint p = on ? ink : dim;
-                int was = p.getColor();
-                p.setColor(on ? Tokens.INK_LIGHT : Tokens.ink(night));
-                c.drawText(chips.get(i), tmp.left + 28 * k + icon + 12 * k, tmp.centerY() + Ui.halfCap(p), p);
-                p.setColor(was);
-                x = tmp.right + 16 * k;
-            }
-        }
-        if (!posters.isEmpty()) {
-            c.drawText(Ui.tr("Popular on your apps"), x0, 448 * k, dim);
-            for (int i = 0; i < posters.size(); i++) {
-                float px = x0 + i * 262 * k;
-                tmp.set(px, 470 * k, px + 230 * k, 470 * k + 345 * k);
-                poster(c, tmp, posters.get(i), false, i);
-            }
-        }
-        float hy = 900 * k;
-        float hintX = x0;
-        if (Symbols.get(getContext(), "mic") != null) {
-            Symbols.draw(getContext(), c, "mic", x0 + 15 * k, hy - 8 * k, 30 * k, Tokens.inkSecondary(night));
-            hintX = x0 + 44 * k;
-        }
-        c.drawText(Ui.tr("Or hold the remote's mic: “funny shows for tonight”"), hintX, hy, dim);
-    }
-
-    private void drawResults(Canvas c) {
-        float x0 = 800 * k;
-        if (!reply.isEmpty()) {
-            tmp.set(x0, 200 * k, x0 + 1040 * k, 200 * k + 140 * k);
-            plate.setColor(Tokens.glassTop(night));
-            c.drawRoundRect(tmp, Tokens.RADIUS_PANEL * k, Tokens.RADIUS_PANEL * k, plate);
-            Symbols.draw(getContext(), c, "speaker", tmp.left + 58 * k, tmp.top + 52 * k, 44 * k, Tokens.ink(night));
-            title.setTextSize(36 * k);
-            title.setColor(Tokens.ink(night));
-            c.drawText(TextUtils.ellipsize(reply, new android.text.TextPaint(title), tmp.width() - 150 * k, TextUtils.TruncateAt.END).toString(),
-                    tmp.left + 108 * k, tmp.top + 58 * k, title);
-            title.setTextSize(Tokens.TYPE_ROWTITLE * k);
-            String sub = status.isEmpty() ? Ui.tr("Also said aloud · the title is below") : status;
-            c.drawText(sub, tmp.left + 108 * k, tmp.top + 104 * k, dim);
-        }
-        List<Hit> titles = new ArrayList<>();
-        List<Hit> apps = new ArrayList<>();
-        for (Hit h : hits) if (h.app || h.store) apps.add(h); else titles.add(h);
-        float rowTop = reply.isEmpty() ? 212 * k : 366 * k;
-        int focusTitle = zone == RESULT && index < titles.size() ? index : -1;
-        if (!titles.isEmpty()) {
-            c.drawText(Ui.tr("Movies & Shows"), x0, rowTop + 28 * k, title);
-            float cardTop = rowTop + 48 * k;
-            float x = x0;
-            float nameX = x0, nameY = cardTop;
-            String name = "", cap = "";
-            for (int i = 0; i < titles.size(); i++) {
-                boolean focused = i == focusTitle;
-                float cw = (focused ? Tokens.CARD_WIDEW : Tokens.CARD_NARROWW) * k;
-                float ch = Tokens.CARD_ROWH * k;
-                if (x > w - 40 * k) break;
-                tmp.set(x, cardTop, Math.min(w, x + cw), cardTop + ch);
-                drawHitArt(c, tmp, titles.get(i), focused, i);
-                if (focused) {
-                    plate.setStyle(Paint.Style.STROKE);
-                    plate.setStrokeWidth(Tokens.FOCUS_RING * k);
-                    plate.setColor(0xFFFFFFFF);
-                    c.drawRoundRect(tmp, Tokens.RADIUS_CARD * k, Tokens.RADIUS_CARD * k, plate);
-                    plate.setStrokeWidth(Tokens.LAYOUT_FOCUSEDGE * k);
-                    plate.setColor(Tokens.focusRingedge(night));
-                    c.drawRoundRect(tmp, Tokens.RADIUS_CARD * k, Tokens.RADIUS_CARD * k, plate);
-                    plate.setStyle(Paint.Style.FILL);
-                    name = titles.get(i).title;
-                    cap = titles.get(i).meta == null ? "" : titles.get(i).meta;
-                    nameX = x;
-                    nameY = cardTop + ch + 44 * k;
-                } else if (tmp.bottom + 36 * k < h) {
-                    meta.setColor(Tokens.inkSecondary(night));
-                    c.drawText(TextUtils.ellipsize(titles.get(i).meta == null ? "" : titles.get(i).meta,
-                            new android.text.TextPaint(meta), cw, TextUtils.TruncateAt.END).toString(), x, cardTop + ch + 32 * k, meta);
-                }
-                x += cw + Tokens.SPACE_GAP_CARD * k;
-            }
-            if (!name.isEmpty()) {
-                title.setColor(Tokens.ink(night));
-                c.drawText(name, nameX, nameY, title);
-                meta.setColor(Tokens.inkSecondary(night));
-                c.drawText(cap, nameX, nameY + 36 * k, meta);
-            }
-            rowTop = cardTop + Tokens.CARD_ROWH * k + 120 * k;
-        }
-        if (!apps.isEmpty() && reply.isEmpty() && rowTop + 160 * k < h - 24 * k) {
-            c.drawText(Ui.tr("Apps"), x0, rowTop + 8 * k, title);
-            float ax = x0;
-            for (int i = 0; i < apps.size(); i++) {
-                int at = titles.size() + i;
-                boolean focused = zone == RESULT && index == at;
-                drawApp(c, apps.get(i), ax, rowTop + 28 * k, focused);
-                ax += 250 * k;
-            }
-        }
-        if (titles.isEmpty() && apps.isEmpty() && !status.isEmpty()) drawEmpty(c);
-    }
-
-    private void drawEmpty(Canvas c) {
-        float x0 = 800 * k;
-        Symbols.draw(getContext(), c, "search", x0 + 48 * k, 300 * k, 96 * k, Tokens.inkTertiary(night));
-        title.setTextSize(48 * k);
-        title.setColor(Tokens.ink(night));
-        String no = Ui.trf("No matches for “{query}”", "query", query);
-        String headline = status.isEmpty() ? no : status;
-        c.drawText(TextUtils.ellipsize(headline, new android.text.TextPaint(title), 1000 * k, TextUtils.TruncateAt.END).toString(),
-                x0, 430 * k, title);
-        title.setTextSize(Tokens.TYPE_ROWTITLE * k);
-        if (headline.equals(no)) c.drawText(Ui.tr("Check the spelling, or try a title, an actor or an app."), x0, 490 * k, dim);
-        float ax = x0;
-        int n = 0;
-        if (askShown()) {
-            float used = drawAction(c, "sparkles", Ui.tr("Ask Google Assistant"), ax, 540 * k, zone == ACTION && index == n);
-            if (used > 0) { ax += used + 16 * k; n++; }
-        }
-        drawAction(c, null, Ui.tr("Clear search"), ax, 540 * k, zone == ACTION && index == n);
-        dim.setColor(Tokens.inkSecondary(night));
-        c.drawText(Ui.tr("Assistant can answer things like “what's on tonight” or “turn up the volume”."), x0, 680 * k, dim);
-    }
-
-    /**
-     * Title art the same way the home rows draw it: the backdrop, or the poster when the wide photo is missing.
-     * The card already has a size here, so the rounded shader is applied to that rect (an outline clipped before
-     * layout would draw nothing).
-     */
-    private void drawHitArt(Canvas c, RectF r, Hit hit, boolean wide, int tint) {
-        Recs.Pick p = demo || hit == null ? null : hit.pick;
-        if (p != null) {
-            Recs recs = Recs.get(getContext());
-            Backdrop b = recs.backdrop(p);
-            Recs.Poster poster = recs.poster(p);
-            Bitmap image = null;
-            BitmapShader shader = null;
-            if (wide && b != null && b.wide != null && b.wideShader != null) {
-                image = b.wide;
-                shader = b.wideShader;
-            } else if (poster != null && poster.bitmap != null && poster.shader != null) {
-                image = poster.bitmap;
-                shader = poster.shader;
-            } else if (b != null && b.wide != null && b.wideShader != null) {
-                image = b.wide;
-                shader = b.wideShader;
-            }
-            if (image != null && shader != null) {
-                cover(c, image, shader, r, Tokens.RADIUS_CARD * k);
-                return;
-            }
-        }
-        poster(c, r, hit == null ? "" : hit.title, wide, tint);
-    }
-
-    /** The image cropped to the card, corners rounded by the shader. The rect is already laid out. */
-    private void cover(Canvas c, Bitmap image, BitmapShader shader, RectF cell, float radius) {
-        float iw = image.getWidth(), ih = image.getHeight();
-        if (iw < 1 || ih < 1 || cell.width() < 1 || cell.height() < 1) return;
-        float sw = Math.min(iw, cell.width() / cell.height() * ih), sl = (iw - sw) / 2;
-        float sx = cell.width() / sw, sy = cell.height() / ih;
-        c.save();
-        c.translate(cell.left, cell.top);
-        c.scale(sx, sy);
-        c.translate(-sl, 0);
-        imageFill.setShader(shader);
-        c.drawRoundRect(sl, 0, sl + sw, ih, radius / sx, radius / sy, imageFill);
-        imageFill.setShader(null);
-        c.restore();
-    }
-
-    private void poster(Canvas c, RectF r, String name, boolean wide, int tint) {
-        int[] pal = PALETTE[Math.floorMod(tint, PALETTE.length)];
-        fill.setShader(new LinearGradient(r.left, r.top, r.right, r.bottom, pal[0], pal[1], Shader.TileMode.CLAMP));
-        c.drawRoundRect(r, Tokens.RADIUS_CARD * k, Tokens.RADIUS_CARD * k, fill);
-        fill.setShader(null);
-        fill.setColor(0x66FFFFFF);
-        c.drawCircle(r.centerX(), r.top + r.height() * 0.36f, Math.min(r.width(), r.height()) * 0.16f, fill);
-        if (!wide && name != null) {
-            artText.setTextSize(Math.max(22 * k, 20));
-            String line = TextUtils.ellipsize(name, new android.text.TextPaint(artText), r.width() - 24 * k, TextUtils.TruncateAt.END).toString();
-            c.drawText(line, r.left + 16 * k, r.bottom - 22 * k, artText);
+        c.drawText(Ui.tr("Or hold the remote's mic: “funny shows for tonight”"), x, y, dim);
+        if (chips.isEmpty()) return;
+        float cx = x;
+        float cy = y + 48 * k;
+        for (int i = 0; i < chips.size(); i++) {
+            float used = drawButton(c, chips.get(i), cx, cy, false, zone == CHIP && index == i, 0);
+            cx += used + 16 * k;
         }
     }
 
-    private void drawApp(Canvas c, Hit hit, float x, float y, boolean focused) {
-        int[] pal = PALETTE[Math.floorMod(hit.title.hashCode(), PALETTE.length)];
-        tmp.set(x, y, x + 210 * k, y + 118 * k);
-        if (focused) {
-            float s = 1.06f;
-            float cx = tmp.centerX(), cy = tmp.centerY();
-            tmp.set(cx - tmp.width() * s / 2, cy - tmp.height() * s / 2, cx + tmp.width() * s / 2, cy + tmp.height() * s / 2);
+    private boolean drawKeys(Canvas c, long now) {
+        float t = ease((now - keysAt) / Tokens.LAYOUT_CINEMA_FADEMS);
+        float alpha = keysOn ? t : (keysAt == 0 ? 0 : 1f - t);
+        if (alpha <= 0.01f) return false;
+        int a = (int) (255 * alpha);
+        plate.setColor(night ? 0xE6101014 : 0xE6F5F5F7);
+        plate.setAlpha(a);
+        c.drawRoundRect(48 * k, 180 * k, 760 * k, h - 48 * k, Tokens.RADIUS_PANEL * k, Tokens.RADIUS_PANEL * k, plate);
+        plate.setAlpha(255);
+        for (int i = 0; i < keys.size(); i++) {
+            boolean on = keysOn && zone == KEY && i == index;
+            drawKey(c, keys.get(i), on, a);
         }
-        fill.setShader(new LinearGradient(tmp.left, tmp.top, tmp.right, tmp.bottom, pal[1], pal[0], Shader.TileMode.CLAMP));
-        c.drawRoundRect(tmp, Tokens.RADIUS_TILE * k, Tokens.RADIUS_TILE * k, fill);
-        fill.setShader(null);
-        if (focused) {
-            plate.setStyle(Paint.Style.STROKE);
-            plate.setStrokeWidth(Tokens.LAYOUT_TILERING * k);
-            plate.setColor(0xFFFFFFFF);
-            c.drawRoundRect(tmp, Tokens.RADIUS_TILE * k, Tokens.RADIUS_TILE * k, plate);
-            plate.setStyle(Paint.Style.FILL);
-        }
-        artText.setTextAlign(Paint.Align.CENTER);
-        artText.setTextSize(28 * k);
-        String word = hit.title == null ? "" : hit.title;
-        c.drawText(TextUtils.ellipsize(word, new android.text.TextPaint(artText), tmp.width() - 16 * k, TextUtils.TruncateAt.END).toString(),
-                tmp.centerX(), tmp.centerY() + Ui.halfCap(artText), artText);
-        artText.setTextAlign(Paint.Align.LEFT);
-        meta.setColor(Tokens.inkSecondary(night));
-        meta.setTextAlign(Paint.Align.CENTER);
-        c.drawText(hit.meta == null ? "" : hit.meta, tmp.centerX(), tmp.bottom + 36 * k, meta);
-        meta.setTextAlign(Paint.Align.LEFT);
+        return (keysOn && alpha < 0.99f) || (!keysOn && alpha > 0.01f);
     }
 
-    private void drawKey(Canvas c, Key key, boolean focused) {
-        float s = focused ? 1 + (Tokens.FOCUS_KEY - 1) * Ui.clamp(spring.value) + 0.02f : 1;
+    private void drawKey(Canvas c, Key key, boolean focused, int alpha) {
+        float s = focused ? Tokens.FOCUS_KEY : 1f;
         float cx = key.box.centerX(), cy = key.box.centerY();
         tmp.set(cx - key.box.width() * s / 2, cy - key.box.height() * s / 2,
                 cx + key.box.width() * s / 2, cy + key.box.height() * s / 2);
-        plate.setStyle(Paint.Style.FILL);
-        plate.setColor(focused ? 0xFFFFFFFF : (night ? 0x12FFFFFF : Tokens.glassTop(false)));
+        plate.setColor(focused ? 0xFFFFFFFF : Tokens.cinemaPill(night));
+        plate.setAlpha(focused ? 255 : alpha);
         c.drawRoundRect(tmp, 18 * k, 18 * k, plate);
+        plate.setAlpha(255);
         int color = focused ? Tokens.INK_LIGHT : Tokens.ink(night);
-        if (key.action == Key.DELETE) {
-            String label = Ui.tr("delete");
-            keyText.setTextSize(28 * k);
-            keyText.setColor(color);
-            float tw = keyText.measureText(label);
-            float icon = 28 * k;
-            boolean glyph = Symbols.get(getContext(), "chevron_right") != null;
-            float start = glyph ? cx - (icon + 8 * k + tw) / 2 : cx - tw / 2;
-            if (glyph) {
-                c.save();
-                c.scale(-1, 1, start + icon / 2, cy);
-                Symbols.draw(getContext(), c, "chevron_right", start + icon / 2, cy, icon, color);
-                c.restore();
-            }
-            c.drawText(label, (glyph ? start + icon + 8 * k : start) + tw / 2, cy + Ui.halfCap(keyText), keyText);
-            return;
-        }
-        String label = key.action == Key.SPACE ? Ui.tr("space") : key.action == Key.CLEAR ? Ui.tr("clear") : key.label;
         keyText.setColor(color);
-        keyText.setTextSize((key.action == Key.CHAR ? 32 : 28) * k);
+        keyText.setAlpha(focused ? 255 : alpha);
+        String label = key.action == Key.SPACE ? Ui.tr("space") : key.action == Key.DELETE ? Ui.tr("delete")
+                : key.action == Key.CLEAR ? Ui.tr("clear") : key.label;
+        keyText.setTextSize((key.action == Key.CHAR ? 32 : 26) * k);
         c.drawText(label, cx, cy + Ui.halfCap(keyText), keyText);
+        keyText.setAlpha(255);
     }
 
-    /**
-     * A button with a picture and a label. `icon` null draws a cross (Clear search has no symbol file).
-     * Returns the width used, or 0 when the picture or the words are missing: nothing is drawn then.
-     */
-    private float drawAction(Canvas c, String icon, String label, float x, float y, boolean focused) {
-        if (label == null || label.isEmpty()) return 0;
-        boolean cross = icon == null;
-        if (!cross && Symbols.get(getContext(), icon) == null) return 0;
-        float iconSize = 28 * k;
-        float savedSize = dim.getTextSize();
-        int savedColor = dim.getColor();
-        dim.setTextSize(30 * k);
-        float maxText = 520 * k;
-        String shown = TextUtils.ellipsize(label, new android.text.TextPaint(dim), maxText, TextUtils.TruncateAt.END).toString();
-        if (shown.isEmpty()) {
-            dim.setTextSize(savedSize);
-            return 0;
+    private Hit focusedHit() {
+        if (hits.isEmpty()) return null;
+        int i = titleIndex;
+        if (i < 0 || i >= hits.size()) i = 0;
+        return hits.get(i);
+    }
+
+    private void prefetchAround(int i) {
+        if (demo) return;
+        Recs recs = Recs.get(getContext());
+        for (int d = -1; d <= 1; d++) {
+            int at = i + d;
+            if (at >= 0 && at < hits.size() && hits.get(at).pick != null) recs.prefetchCinema(hits.get(at).pick);
         }
-        float tw = dim.measureText(shown);
-        float wChip = 28 * k + iconSize + 12 * k + tw + 36 * k;
-        tmp.set(x, y, x + wChip, y + 76 * k);
-        plate.setStyle(Paint.Style.FILL);
-        plate.setColor(focused ? 0xFFFFFFFF : Tokens.glassTop(night));
-        c.drawRoundRect(tmp, 38 * k, 38 * k, plate);
-        int color = focused ? Tokens.INK_LIGHT : Tokens.ink(night);
-        float icx = tmp.left + 28 * k + iconSize / 2f;
-        if (cross) drawCross(c, icx, tmp.centerY(), iconSize, color);
-        else Symbols.draw(getContext(), c, icon, icx, tmp.centerY(), iconSize, color);
-        dim.setColor(color);
-        c.drawText(shown, tmp.left + 28 * k + iconSize + 12 * k, tmp.centerY() + Ui.halfCap(dim), dim);
-        dim.setColor(savedColor);
-        dim.setTextSize(savedSize);
-        return wChip;
     }
 
-    private void drawCross(Canvas c, float cx, float cy, float size, int color) {
-        plate.setStyle(Paint.Style.STROKE);
-        plate.setStrokeWidth(Math.max(2f, size * 0.14f));
-        plate.setStrokeCap(Paint.Cap.ROUND);
-        plate.setColor(color);
-        float d = size * 0.34f;
-        c.drawLine(cx - d, cy - d, cx + d, cy + d, plate);
-        c.drawLine(cx + d, cy - d, cx - d, cy + d, plate);
-        plate.setStrokeCap(Paint.Cap.BUTT);
-        plate.setStyle(Paint.Style.FILL);
+    private float focusEase(long now) {
+        if (focusAt == 0) return 1f;
+        return ease((now - focusAt) / Tokens.LAYOUT_CINEMA_FADEMS);
     }
 
-    private boolean askShown() {
-        return Symbols.get(getContext(), "sparkles") != null;
+    private static float ease(float t) {
+        if (t <= 0f) return 0f;
+        if (t >= 1f) return 1f;
+        float u = 1f - t;
+        return 1f - u * u * u;
     }
 
-    /** Recent searches are buttons only when the sync picture can sit beside the title. */
-    private boolean recentButtons() {
-        return !chips.isEmpty() && Symbols.get(getContext(), "sync") != null;
+    /** Split the spoken line once per change: the last word of the second line is drawn lighter. */
+    private void splitQuery(Paint p, float max) {
+        String text = query.isEmpty() ? Ui.tr("Listening…") : query;
+        if (text.equals(lineKey)) return;
+        lineKey = text;
+        int split = breakAt(text, p, max);
+        line1 = split < 0 ? text : text.substring(0, split).trim();
+        String second = split < 0 ? "" : text.substring(split).trim();
+        int last = second.lastIndexOf(' ');
+        lineHead = last < 0 ? "" : second.substring(0, last + 1);
+        lineTail = last < 0 ? second : second.substring(last + 1);
     }
 
-    private int actionCount() {
-        return (askShown() ? 1 : 0) + 1;
-    }
-
-    private boolean voiceShown() {
-        return voice.width() > 0 && Symbols.get(getContext(), "mic") != null;
+    /** Index of the first character that doesn't fit, or -1 when the whole string fits. */
+    private static int breakAt(String text, Paint p, float max) {
+        if (p.measureText(text) <= max) return -1;
+        int cut = text.lastIndexOf(' ');
+        while (cut > 0 && p.measureText(text.substring(0, cut)) > max) cut = text.lastIndexOf(' ', cut - 1);
+        return cut < 0 ? -1 : cut;
     }
 
     boolean onKey(KeyEvent e) {
-        if (e.getAction() != KeyEvent.ACTION_DOWN) return e.getKeyCode() == KeyEvent.KEYCODE_BACK && listening;
+        if (e.getAction() != KeyEvent.ACTION_DOWN) return e.getKeyCode() == KeyEvent.KEYCODE_BACK && (listening || keysOn);
         if (listening) {
-            if (e.getKeyCode() == KeyEvent.KEYCODE_BACK) {
-                host.cancelListen();
-                return true;
-            }
+            if (e.getKeyCode() == KeyEvent.KEYCODE_BACK) host.cancelListen();
             return true;
         }
         int code = e.getKeyCode();
+        if (code == KeyEvent.KEYCODE_BACK) {
+            if (keysOn) {
+                closeKeys();
+                return true;
+            }
+            return false;
+        }
         if (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER) {
             activate();
             return true;
@@ -712,7 +918,7 @@ final class SearchCanvas extends View {
             backspace();
             return true;
         }
-        if (code >= KeyEvent.KEYCODE_A && code <= KeyEvent.KEYCODE_Z && zone == KEY) {
+        if (code >= KeyEvent.KEYCODE_A && code <= KeyEvent.KEYCODE_Z) {
             type(String.valueOf((char) ('a' + code - KeyEvent.KEYCODE_A)));
             return true;
         }
@@ -727,56 +933,80 @@ final class SearchCanvas extends View {
         return true;
     }
 
+    private void closeKeys() {
+        keysOn = false;
+        keysAt = SystemClock.uptimeMillis();
+        zone = BAR;
+        index = 0;
+        invalidate();
+    }
+
+    private void openKeys() {
+        if (keys.isEmpty()) layoutKeys();
+        keysOn = true;
+        keysAt = SystemClock.uptimeMillis();
+        zone = KEY;
+        index = 0;
+        invalidate();
+    }
+
     private void move(int dx, int dy) {
-        spring.snap(0);
-        spring.target = 1;
-        layoutVoice();
-        int mic = keys.size();
-        if (zone == KEY && index == mic && !voiceShown()) index = 0;
-        if (zone == KEY) {
-            if (index == mic && voiceShown()) {
-                if (dy > 0) index = 0;
-            } else if (index < LETTERS.length()) {
-                int col = index % 6, row = index / 6;
-                if (dx != 0) {
-                    int nc = col + dx;
-                    if (nc >= 0 && nc < 6) index = row * 6 + nc;
-                }
-                if (dy < 0) index = row == 0 ? (voiceShown() ? mic : index) : (row - 1) * 6 + col;
-                if (dy > 0) {
-                    if (row < 5) index = (row + 1) * 6 + col;
-                    else index = LETTERS.length() + (col < 2 ? 0 : col < 5 ? 1 : 2);
-                }
-            } else {
-                int b = index - LETTERS.length();
-                if (dx < 0) index = LETTERS.length() + Math.max(0, b - 1);
-                if (dx > 0) index = LETTERS.length() + Math.min(2, b + 1);
-                if (dy < 0) index = 30 + (b == 0 ? 1 : b == 1 ? 3 : 5);
-                if (dy > 0) goDown();
-            }
+        focusAt = SystemClock.uptimeMillis();
+        if (dx != 0) slideDir = dx;
+        if (zone == KEY) moveKeys(dx, dy);
+        else if (zone == BAR) {
+            if (dy > 0) downFromBar();
         } else if (zone == CHIP) {
-            if (!recentButtons()) { zone = KEY; index = 0; }
-            else if (dy < 0) { zone = KEY; index = LETTERS.length(); }
+            if (dy < 0) { zone = BAR; index = 0; }
             else if (dx != 0) index = Math.max(0, Math.min(chips.size() - 1, index + dx));
-        } else if (zone == RESULT) {
-            if (dy < 0) { zone = KEY; index = 0; }
-            else if (dx != 0) index = Math.max(0, Math.min(hits.size() - 1, index + dx));
-        } else {
-            if (dy < 0) { zone = KEY; index = LETTERS.length() + 1; }
-            else if (dx > 0) index = Math.min(actionCount() - 1, index + 1);
-            else if (dx < 0) index = Math.max(0, index - 1);
+        } else if (zone == BUTTON) {
+            int n = buttonCount();
+            if (dy < 0) { zone = BAR; index = 0; }
+            else if (dy > 0 && !hits.isEmpty()) { zone = POSTER; index = titleIndex; }
+            else if (dx != 0) index = Math.max(0, Math.min(n - 1, index + dx));
+        } else if (zone == POSTER) {
+            if (dy < 0) { zone = BUTTON; index = 0; }
+            else if (dx != 0 && !hits.isEmpty()) {
+                index = Math.max(0, Math.min(hits.size() - 1, index + dx));
+                titleIndex = index;
+                prefetchAround(titleIndex);
+            }
         }
         invalidate();
     }
 
-    private void goDown() {
-        if (query.isEmpty() && recentButtons()) { zone = CHIP; index = 0; }
-        else if (!hits.isEmpty()) { zone = RESULT; index = 0; }
-        else if (!query.isEmpty()) { zone = ACTION; index = 0; }
+    private void moveKeys(int dx, int dy) {
+        if (index >= LETTERS.length()) {
+            int b = index - LETTERS.length();
+            if (dx < 0) index = LETTERS.length() + Math.max(0, b - 1);
+            if (dx > 0) index = LETTERS.length() + Math.min(2, b + 1);
+            if (dy < 0) index = 30 + (b == 0 ? 1 : b == 1 ? 3 : 5);
+            return;
+        }
+        int col = index % 6, row = index / 6;
+        if (dx != 0) {
+            int nc = col + dx;
+            if (nc >= 0 && nc < 6) index = row * 6 + nc;
+        }
+        if (dy < 0 && row > 0) index = (row - 1) * 6 + col;
+        if (dy > 0) {
+            if (row < 5) index = (row + 1) * 6 + col;
+            else index = LETTERS.length() + (col < 2 ? 0 : col < 5 ? 1 : 2);
+        }
+    }
+
+    private void downFromBar() {
+        if (!hits.isEmpty()) { zone = BUTTON; index = 0; }
+        else if (!query.isEmpty()) { zone = BUTTON; index = 0; }
+        else if (!chips.isEmpty()) { zone = CHIP; index = 0; }
+    }
+
+    private int buttonCount() {
+        return hits.isEmpty() ? 3 : 2;
     }
 
     private void activate() {
-        if (zone == KEY && index == keys.size() && voiceShown()) host.listen();
+        if (zone == BAR) openKeys();
         else if (zone == KEY && index < keys.size()) {
             Key key = keys.get(index);
             if (key.action == Key.CHAR) type(key.label);
@@ -786,15 +1016,24 @@ final class SearchCanvas extends View {
         } else if (zone == CHIP && index < chips.size()) {
             query = chips.get(index);
             host.submit(query, false);
-        } else if (zone == RESULT && index < hits.size()) {
-            int t = 0;
-            for (Hit h : hits) if (!h.app && !h.store) { if (t++ == index) { host.open(h); return; } }
-            for (Hit h : hits) if (h.app || h.store) { if (t++ == index) { host.open(h); return; } }
-        } else if (zone == ACTION) {
-            if (askShown() && index == 0) host.ask(query);
-            else { query = ""; host.submit("", false); }
-        }
+        } else if (zone == POSTER && titleIndex < hits.size()) host.open(hits.get(titleIndex));
+        else if (zone == BUTTON) activateButton();
         invalidate();
+    }
+
+    private void activateButton() {
+        if (!hits.isEmpty()) {
+            Hit hit = focusedHit();
+            if (index == 0 && hit != null) host.open(hit);
+            else if (hit != null && hit.title != null && !hit.title.isEmpty()) {
+                query = hit.title;
+                host.submit(hit.title, false);
+            }
+            return;
+        }
+        if (index == 0) host.listen();
+        else if (index == 1) host.ask(query);
+        else { query = ""; host.submit("", false); }
     }
 
     private void type(String s) {

@@ -3,9 +3,12 @@ package io.freemytv;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
-import android.graphics.BitmapShader;
-import android.graphics.Shader;
 import android.graphics.BitmapFactory;
+import android.graphics.BitmapShader;
+import android.graphics.Canvas;
+import android.graphics.Paint;
+import android.graphics.RectF;
+import android.graphics.Shader;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.os.Handler;
@@ -52,6 +55,8 @@ final class Recs {
         String kind;            // "movie" or "tv"
         String title, backdrop, poster, meta = "", overview = "", app, pkg;   // poster: the portrait image of the narrow cards
         String link;            // opens the title in its app (looked up with Watchmode or Wikidata), or null: the app's home
+        String length = "";     // "1h 42m" or a season count, once details are in; search draws it on its own
+        int year;
         boolean detailed;
         java.io.File photo;     // one of your own photos (Photos): no title, no caption
     }
@@ -202,6 +207,11 @@ final class Recs {
     private final Map<String, Poster> posters = new LinkedHashMap<>();   // narrow-card portraits, same keys as images
     private final Map<String, Backdrop> images = new LinkedHashMap<>(16, 0.75f, true);   // this hour's, built and ready to draw
     private final java.util.Set<String> pending = new java.util.HashSet<>();
+    /** Search heroes at about 960×540, and their portraits. Kept apart from the home-screen backdrops. */
+    private final Map<String, Bitmap> cinemaPlates = new LinkedHashMap<>();
+    private final Map<String, Bitmap> cinemaPosters = new LinkedHashMap<>();
+    private final java.util.Set<String> cinemaPending = new HashSet<>();
+    private final java.util.Set<String> cinemaReady = new HashSet<>();
     private volatile List<Pick> picks = new ArrayList<>();
     private volatile List<List<Row>> rows = new ArrayList<>();   // 0 movies, 1 shows
     private volatile int activeTab, activeRow;                   // the row on screen, so its details come first
@@ -913,7 +923,19 @@ final class Recs {
         p.backdrop = backdrop;
         p.poster = o.isNull("poster_path") ? "" : o.optString("poster_path");
         p.overview = o.optString("overview").trim();
+        p.year = yearOf(o.optString(kind.equals("movie") ? "release_date" : "first_air_date", ""));
         list.add(p);
+    }
+
+    private static int yearOf(String date) {
+        if (date == null || date.length() < 4) return 0;
+        int y = 0;
+        for (int i = 0; i < 4; i++) {
+            char c = date.charAt(i);
+            if (c < '0' || c > '9') return 0;
+            y = y * 10 + (c - '0');
+        }
+        return y;
     }
 
     private static boolean animated(JSONObject o) {
@@ -948,6 +970,9 @@ final class Recs {
             parts.add(genre(name));
         }
         String length = p.kind.equals("movie") ? runtime(o.optInt("runtime")) : seasons(o.optInt("number_of_seasons"));
+        p.length = length == null ? "" : length;
+        int year = yearOf(o.optString(p.kind.equals("movie") ? "release_date" : "first_air_date", ""));
+        if (year > 0) p.year = year;
         if (length != null) parts.add(length);
         JSONObject wp = o.optJSONObject("watch/providers");
         JSONObject br = wp == null ? null : wp.optJSONObject("results") == null ? null : wp.optJSONObject("results").optJSONObject(REGION);
@@ -1463,6 +1488,92 @@ final class Recs {
         synchronized (images) {
             return p == null || p.backdrop == null ? null : posters.get(p.backdrop);
         }
+    }
+
+    /**
+     * Search hero, about 960×540, and the row's portrait. Separate from the home Backdrop so a focus move on the
+     * G10 does not decode a 1920 plate. Null until the background load finishes; the neighbour is requested the same way.
+     */
+    Bitmap cinemaPlate(Pick p) {
+        if (p == null || p.backdrop == null || p.backdrop.isEmpty()) return null;
+        synchronized (cinemaPlates) {
+            Bitmap b = cinemaPlates.get(p.backdrop);
+            if (b != null) return b;
+        }
+        prefetchCinema(p);
+        return null;
+    }
+
+    Bitmap cinemaPoster(Pick p) {
+        if (p == null || p.backdrop == null || p.backdrop.isEmpty()) return null;
+        synchronized (cinemaPlates) {
+            Bitmap b = cinemaPosters.get(p.backdrop);
+            if (b != null) return b;
+        }
+        prefetchCinema(p);
+        return null;
+    }
+
+    void prefetchCinema(Pick p) {
+        if (p == null || p.backdrop == null || p.backdrop.isEmpty()) return;
+        synchronized (cinemaPlates) {
+            if (cinemaReady.contains(p.backdrop) || !cinemaPending.add(p.backdrop)) return;
+        }
+        io.execute(() -> {
+            try {
+                loadCinema(p);
+            } finally {
+                synchronized (cinemaPlates) { cinemaPending.remove(p.backdrop); }
+            }
+        });
+    }
+
+    private void loadCinema(Pick p) {
+        try {
+            download(p);
+            Bitmap plate = decodeCover(imageFile(p), (int) Tokens.LAYOUT_CINEMA_PLATEW, (int) Tokens.LAYOUT_CINEMA_PLATEH);
+            Bitmap poster = null;
+            File pf = posterFile(p);
+            if (pf != null && pf.exists()) poster = decodeCover(pf, 240, 360);
+            synchronized (cinemaPlates) {
+                cinemaReady.add(p.backdrop);
+                if (plate != null) cinemaPlates.put(p.backdrop, plate);
+                if (poster != null) cinemaPosters.put(p.backdrop, poster);
+                while (cinemaPlates.size() > 4) {
+                    String eldest = cinemaPlates.keySet().iterator().next();
+                    Bitmap gone = cinemaPlates.remove(eldest);
+                    if (gone != null && !gone.isRecycled()) gone.recycle();
+                    Bitmap row = cinemaPosters.remove(eldest);
+                    if (row != null && !row.isRecycled()) row.recycle();
+                    cinemaReady.remove(eldest);
+                }
+            }
+            notifyListeners();
+        } catch (IOException | RuntimeException | OutOfMemoryError e) {
+            AppLog.w("search image: " + e.getMessage());
+        }
+    }
+
+    /** Centre-crop into a new bitmap of dw×dh. The source is left for the caller. */
+    private static Bitmap decodeCover(File f, int dw, int dh) {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(f.getPath(), bounds);
+        if (bounds.outWidth < 1 || bounds.outHeight < 1) return null;
+        BitmapFactory.Options opts = new BitmapFactory.Options();
+        opts.inSampleSize = 1;
+        while (bounds.outWidth / (opts.inSampleSize * 2) >= dw) opts.inSampleSize *= 2;
+        Bitmap raw = BitmapFactory.decodeFile(f.getPath(), opts);
+        if (raw == null) return null;
+        Bitmap out = Bitmap.createBitmap(dw, dh, Bitmap.Config.ARGB_8888);
+        Canvas c = new Canvas(out);
+        float scale = Math.max(dw / (float) raw.getWidth(), dh / (float) raw.getHeight());
+        float sw = raw.getWidth() * scale, sh = raw.getHeight() * scale;
+        float left = (dw - sw) / 2f, top = (dh - sh) / 2f;
+        Paint paint = new Paint(Paint.FILTER_BITMAP_FLAG);
+        c.drawBitmap(raw, null, new RectF(left, top, left + sw, top + sh), paint);
+        if (raw != out && !raw.isRecycled()) raw.recycle();
+        return out;
     }
 
     void trim() {

@@ -82,6 +82,26 @@ final class Tokens {
 
     static int focusRingedge(boolean dark) { return dark ? FOCUS_RINGEDGE_DARK : FOCUS_RINGEDGE_LIGHT; }
 
+    static final int CINEMA_PILL_LIGHT = 0xEBFFFFFF;
+    static final int CINEMA_PILL_DARK = 0x1AFFFFFF;
+
+    static int cinemaPill(boolean dark) { return dark ? CINEMA_PILL_DARK : CINEMA_PILL_LIGHT; }
+
+    static final int CINEMA_TRACK_LIGHT = 0x241D1D1F;
+    static final int CINEMA_TRACK_DARK = 0x33F5F5F7;
+
+    static int cinemaTrack(boolean dark) { return dark ? CINEMA_TRACK_DARK : CINEMA_TRACK_LIGHT; }
+
+    static final int CINEMA_BONE_LIGHT = 0x1A1D1D1F;
+    static final int CINEMA_BONE_DARK = 0x29F5F5F7;
+
+    static int cinemaBone(boolean dark) { return dark ? CINEMA_BONE_DARK : CINEMA_BONE_LIGHT; }
+
+    static final int CINEMA_SCRIM_LIGHT = 0xD1F5F5F7;
+    static final int CINEMA_SCRIM_DARK = 0x8C000000;
+
+    static int cinemaScrim(boolean dark) { return dark ? CINEMA_SCRIM_DARK : CINEMA_SCRIM_LIGHT; }
+
     static final int ACCENT_ON = 0xFF3FD69B;
     static final int ACCENT_WARN = 0xFFFFC266;
     static final int ACCENT_UP = 0xFF248A3D;
@@ -171,4 +191,22 @@ final class Tokens {
     static final float LAYOUT_SETTINGSLISTX = 860f;
     static final float LAYOUT_SETTINGSLISTW = 964f;
     static final float LAYOUT_SETTINGSLISTTOP = 196f;
+    static final float LAYOUT_CINEMA_BARTOP = 36f;
+    static final float LAYOUT_CINEMA_BARH = 64f;
+    static final float LAYOUT_CINEMA_TITLE = 56f;
+    static final float LAYOUT_CINEMA_REPLY = 32f;
+    static final float LAYOUT_CINEMA_POSTERW = 168f;
+    static final float LAYOUT_CINEMA_POSTERH = 252f;
+    static final float LAYOUT_CINEMA_POSTERTOP = 748f;
+    static final float LAYOUT_CINEMA_STAGGER = 60f;
+    static final float LAYOUT_CINEMA_RISE = 24f;
+    static final float LAYOUT_CINEMA_SLIDE = 12f;
+    static final float LAYOUT_CINEMA_FOCUS = 1.06f;
+    static final float LAYOUT_CINEMA_FADEMS = 280f;
+    static final float LAYOUT_CINEMA_BACKDROPMS = 400f;
+    static final float LAYOUT_CINEMA_THINKMS = 5500f;
+    static final float LAYOUT_CINEMA_TYPEMS = 33f;
+    static final float LAYOUT_CINEMA_BREATHEMS = 1600f;
+    static final float LAYOUT_CINEMA_PLATEW = 960f;
+    static final float LAYOUT_CINEMA_PLATEH = 540f;
 }
