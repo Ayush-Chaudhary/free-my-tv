@@ -230,6 +230,7 @@ Each PR is on a fresh branch off `main` and is one topic. App PRs: `tools/check.
    (HttpURLConnection, 6 s timeout, parse, error mapping).
    - *Test:* on the G10, a debug broadcast (`am broadcast -a io.freemytv.ASK --es q "..."`, debug builds only)
      logs the reply and picks to `adb logcat -s FreeMyTV`. Wi-Fi off logs a clean failure.
+   - The streaming-service badge is filled in by the TV, not the Worker. See **Phase 2: TV app fills in `service`** below.
 3. **App: voice search asks the assistant.** In `SearchActivity` and `SearchCanvas`: "Thinking…", reply and
    picks as cards, plain search alongside, the fallback, and the TTS rules (stop on mic, ducking). Also the
    README privacy text and the *Voice / Text only / Off* setting.
@@ -246,6 +247,16 @@ Each PR is on a fresh branch off `main` and is one topic. App PRs: `tools/check.
    pill for typed text. README privacy updated again.
    - *Test:* with it on, "something like what I watch" leans to recent titles; off sends none (checked in
      `wrangler tail` request sizes).
+
+## Phase 2: TV app fills in `service`
+
+Decision (owner-approved, 2026-11-07): the per-title TMDB `watch/providers` lookup moves from the Worker to the TV app. A first-time recommend can't reliably stay under the Workers Free 10 ms CPU limit while the Worker parses those provider bodies (measured live at 9 to 28 ms after the PR #13 optimizations).
+
+In phase 2, the TV app takes each pick's `id` and `kind`, calls TMDB `/{movie|tv}/{id}/watch/providers` with its own existing TMDB key, reads the device region's flatrate list, maps it to the installed apps on the TCL G10, and sets the badge or service itself. A pick with no match shows no badge.
+
+At the same time, `service` is dropped from the Worker's `/v1/turn` response, along with the Worker's provider fetch, slicing and caching code. Discover keeps its `with_watch_providers`, `watch_region` and flatrate filters, so picks still lean toward the TV's services. That's a contract change, so bump the README contract and tests together with the app change.
+
+Not started. Don't do it until phase 2 begins.
 
 ## Sources
 
