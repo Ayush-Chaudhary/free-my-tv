@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { handle } from '../src/handler.js';
-import { fold, serviceOf, similarity, simplify } from '../src/match.js';
+import { SCORE_CAP, fold, serviceOf, similarity, simplify } from '../src/match.js';
+import { planSystem, chooseSystem } from '../src/prompts.js';
+import { Tmdb, flatrateIn } from '../src/tmdb.js';
 import { REPLY_MAX } from '../src/turn.js';
 import { ask, fakeFetch, funnyRoutes, fx, gptOss, makeEnv } from './helpers.js';
 
@@ -248,6 +250,44 @@ test('simplify drops filler words, then the last word', () => {
   assert.equal(simplify('the movie Dil Chahta Hai dikhao'), 'dil chahta hai');
   assert.equal(simplify('dil vale dulhania le jayange'), 'dil vale dulhania le');
   assert.equal(simplify('two words'), '');
+});
+
+test('search ranks only the first page of titles, and keeps a match inside that cap', async () => {
+  const results = [];
+  for (let i = 0; i < SCORE_CAP; i++) results.push({ id: i + 1, media_type: 'movie', title: `Nothing ${i}`, popularity: 5, overview: '', release_date: '2020-01-01', genre_ids: [], vote_average: 1, original_language: 'en' });
+  results[3] = { ...results[3], title: 'Exact Match', original_title: 'Something Else' };
+  results.push({ id: 99, media_type: 'movie', title: 'Exact Match', popularity: 100, overview: '', release_date: '2020-01-01', genre_ids: [], vote_average: 9, original_language: 'en' });
+  const tmdb = new Tmdb({ TMDB_KEY: 'k' }, async () => new Response(JSON.stringify({ results }), { status: 200, headers: { 'content-type': 'application/json' } }), { tmdb: 0 });
+  const found = await tmdb.search('Exact Match', 'en');
+  assert.equal(found[0].id, 4);
+  assert.ok(!found.some((c) => c.id === 99));
+});
+
+test('a watch-providers body is read from this region, not from an earlier country', () => {
+  const countries = {};
+  for (const cc of ['AE', 'DE', 'FR', 'GB', 'IN', 'US']) {
+    countries[cc] = {
+      link: `https://www.themoviedb.org/movie/1/watch?locale=${cc}`,
+      flatrate: [{ provider_id: cc === 'US' ? 9 : 8, provider_name: cc === 'US' ? 'Amazon Prime Video' : 'Netflix' }],
+      rent: [{ provider_id: 8, provider_name: 'Netflix' }],
+    };
+  }
+  const text = JSON.stringify({ id: 1, results: countries });
+  const flat = flatrateIn(text, 'US');
+  assert.equal(flat.length, 1);
+  assert.equal(flat[0].provider_name, 'Amazon Prime Video');
+  assert.deepEqual(flatrateIn(text, 'ZZ'), []);
+  assert.deepEqual(flatrateIn('not json', 'US'), []);
+});
+
+test('the plan and choose instructions keep the same words', () => {
+  const plan = planSystem(['netflix', 'prime'], 'US');
+  assert.ok(plan.includes('The TV\'s streaming apps (keys): netflix, prime. Region: US.'));
+  assert.ok(plan.includes('genres": [from: action, adventure,'));
+  assert.equal(planSystem(['netflix', 'prime'], 'US'), plan);
+  const choose = chooseSystem('en');
+  assert.ok(choose.includes("the TV's language is en)"));
+  assert.equal(chooseSystem('en'), choose);
 });
 
 test('serviceOf matches the TV\'s services as the app does', () => {

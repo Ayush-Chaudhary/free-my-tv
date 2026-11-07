@@ -1,6 +1,6 @@
 // TMDB calls, trimmed to the fields a turn needs (this keeps the CPU time of parsing small).
 import { UpstreamError } from './groq.js';
-import { serviceOf, similarity, simplify } from './match.js';
+import { rankRows, serviceOf, simplify } from './match.js';
 
 const BASE = 'https://api.themoviedb.org/3';
 
@@ -46,7 +46,7 @@ export class Tmdb {
     this.cache = cache;
   }
 
-  async get(path, params = {}) {
+  async text(path, params = {}) {
     const url = new URL(BASE + path);
     for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== '') url.searchParams.set(k, String(v));
     const headers = { accept: 'application/json' };
@@ -56,10 +56,15 @@ export class Tmdb {
     this.stats.tmdb += 1;
     const res = await this.fetch(url.toString(), { headers });
     if (!res.ok) throw new UpstreamError(`tmdb ${res.status}`, 502);
+    return res.text();
+  }
+
+  async get(path, params = {}) {
     try {
-      const data = await res.json();
+      const data = JSON.parse(await this.text(path, params));
       return data && typeof data === 'object' ? data : {};
-    } catch {
+    } catch (e) {
+      if (e instanceof UpstreamError) throw e;
       throw new UpstreamError('tmdb: not json', 502);
     }
   }
@@ -89,9 +94,7 @@ export class Tmdb {
       const loose = simplify(term);
       if (loose && loose !== term) found = await run(loose);
     }
-    const score = (r) => Math.max(similarity(term, r.title || r.name), similarity(term, r.original_title || r.original_name));
-    return found
-      .map((r) => ({ r, s: score(r) }))
+    return rankRows(term, found)
       .sort((a, b) => b.s - a.s || (b.r.popularity || 0) - (a.r.popularity || 0))
       .slice(0, 3).map((x) => slim(x.r, x.r.media_type));
   }
@@ -123,10 +126,10 @@ export class Tmdb {
   /** The TV's own service that streams this title in the region (flat rate), or null. */
   async serviceFor(c, region, services) {
     try {
-      const data = await this.get(`/${c.kind}/${c.id}/watch/providers`);
-      const byRegion = data.results && typeof data.results === 'object' && !Array.isArray(data.results) ? data.results : {};
-      const flat = Array.isArray((byRegion[region] || {}).flatrate) ? byRegion[region].flatrate : [];
-      const want = new Set(services);
+      const text = await this.text(`/${c.kind}/${c.id}/watch/providers`);
+      // The payload lists every country. Only this region's flatrate is used, so parse that object alone.
+      const flat = flatrateIn(text, region);
+      const want = services instanceof Set ? services : new Set(services);
       for (const p of flat) {
         const key = serviceOf(p.provider_name, p.provider_id);
         if (key && want.has(key)) return key;
@@ -136,6 +139,52 @@ export class Tmdb {
     }
     return null;
   }
+}
+
+/** The flatrate array for `region` inside a watch-providers body, without parsing the other countries. */
+export function flatrateIn(text, region) {
+  if (!/^[A-Za-z]{2}$/.test(region || '')) return [];
+  const marker = `"${region}":`;
+  let from = 0;
+  while (from < text.length) {
+    const at = text.indexOf(marker, from);
+    if (at < 0) return [];
+    const prev = at === 0 ? '' : text[at - 1];
+    // A key sits after `{` or `,`. The same letters inside a URL or a name do not.
+    if (prev !== '{' && prev !== ',') { from = at + marker.length; continue; }
+    let j = at + marker.length;
+    while (text[j] === ' ' || text[j] === '\n' || text[j] === '\r' || text[j] === '\t') j++;
+    if (text[j] !== '{') { from = at + marker.length; continue; }
+    const end = matchBrace(text, j);
+    if (end < 0) return [];
+    try {
+      const block = JSON.parse(text.slice(j, end + 1));
+      return Array.isArray(block.flatrate) ? block.flatrate : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function matchBrace(text, open) {
+  let depth = 0, inStr = false, esc = false;
+  for (let i = open; i < text.length; i++) {
+    const c = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === '{') depth++;
+    else if (c === '}') {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
 }
 
 function finite(v) {

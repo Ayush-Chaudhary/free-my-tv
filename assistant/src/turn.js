@@ -53,9 +53,11 @@ export async function runTurn(req, env, deps) {
   const out = (body) => ({ body, stats });
 
   // 1. Plan
+  const past = historyText(req.history) || '(none)';
+  const said = JSON.stringify(req.query);
   const plan = await chatJson([
     { role: 'system', content: planSystem(req.services, req.region) },
-    { role: 'user', content: `History (oldest first):\n${historyText(req.history) || '(none)'}\n\nThe person said: ${JSON.stringify(req.query)}` },
+    { role: 'user', content: `History (oldest first):\n${past}\n\nThe person said: ${said}` },
   ], ctx);
   const intent = INTENTS.has(plan.intent) ? plan.intent : 'recommend';
 
@@ -92,7 +94,9 @@ export async function runTurn(req, env, deps) {
 
   const candidates = [...known.values()].slice(0, MAX_CANDIDATES);
   if (!candidates.length) return out({ reply: "I couldn't find anything for that.", intent: 'search', picks: [] });
-  await Promise.all(candidates.map(async (c) => { c.service = await tmdb.serviceFor(c, req.region, req.services); }));
+  // Providers run together, and only for this short list (not every row TMDB returned).
+  const want = new Set(req.services);
+  await Promise.all(candidates.map(async (c) => { c.service = await tmdb.serviceFor(c, req.region, want); }));
 
   // 3. Choose
   const view = candidates.map((c) => ({
@@ -101,7 +105,7 @@ export async function runTurn(req, env, deps) {
   }));
   const chosen = await chatJson([
     { role: 'system', content: chooseSystem(req.lang) },
-    { role: 'user', content: `History (oldest first):\n${historyText(req.history) || '(none)'}\n\nThe person said: ${JSON.stringify(req.query)}\n`
+    { role: 'user', content: `History (oldest first):\n${past}\n\nThe person said: ${said}\n`
       + (d && d.runtime_lte !== null && d.runtime_lte !== '' && Number.isFinite(Number(d.runtime_lte)) ? `Titles were filtered to at most ${Math.round(Number(d.runtime_lte))} minutes.\n` : '')
       + `\nCandidates:\n${JSON.stringify(view)}` },
   ], ctx);
