@@ -159,6 +159,18 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
         return super.dispatchKeyEvent(event);
     }
 
+    @Override public void commit(String query) {
+        if (demo) return;
+        handler.removeCallbacks(typed);
+        pending = query == null ? "" : query.trim();
+        canvas.setQuery(query == null ? "" : query);
+        if (pending.isEmpty()) {
+            showIdle();
+            return;
+        }
+        run(pending, false);
+    }
+
     @Override public void submit(String query, boolean voice) {
         if (demo) return;
         handler.removeCallbacks(typed);

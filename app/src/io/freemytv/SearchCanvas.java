@@ -37,6 +37,8 @@ final class SearchCanvas extends View {
 
     interface Host {
         void submit(String query, boolean voice);
+        /** Run the query now. Enter, the keypad enter and the search key. Not a voice turn. */
+        void commit(String query);
         void open(Hit hit);
         void ask(String query);
         void listen();
@@ -48,11 +50,17 @@ final class SearchCanvas extends View {
     private static final int[] PALETTE = {
             0xFF1B3A5F, 0xFFC45C26, 0xFF6B1D5C, 0xFF3A4450, 0xFF0E7490, 0xFF8E1010
     };
-    /** A quiet waveform shape, scaled by the smoothed mic level. */
-    private static final float[] WAVE = {
-            0.15f, 0.28f, 0.18f, 0.42f, 0.22f, 0.55f, 0.3f, 0.7f, 0.38f, 0.85f, 0.45f, 1f,
-            0.5f, 0.82f, 0.4f, 0.95f, 0.48f, 0.72f, 0.34f, 0.6f, 0.28f, 0.5f, 0.22f, 0.36f, 0.16f
+    /**
+     * Cinema listening bars (D1): short grey marks, a few taller clusters, dots on the centre line.
+     * About 280 px wide on a 1024-wide frame; the stage scales that up.
+     */
+    private static final float[] BARS = {
+            0.05f, 0.08f, 0.14f, 0.06f, 0.22f, 0.48f, 0.28f, 0.08f, 0.05f,
+            0.12f, 0.62f, 0.9f, 0.4f, 0.1f, 0.05f, 0.07f, 0.18f, 0.36f, 0.12f, 0.05f,
+            0.08f, 0.7f, 1f, 0.55f, 0.16f, 0.06f, 0.05f, 0.2f, 0.44f, 0.18f, 0.06f,
+            0.05f, 0.1f, 0.3f, 0.14f, 0.05f
     };
+    private static final float WAVE_W = 280f * (1920f / 1024f);
 
     private final Host host;
     private final List<Key> keys = new ArrayList<>();
@@ -60,9 +68,8 @@ final class SearchCanvas extends View {
     private final List<Hit> hits = new ArrayList<>();
     private final RectF tmp = new RectF();
     private final RectF screen = new RectF();
-    private final Path wave = new Path();
     private final TextPaint replyTp = new TextPaint(Paint.ANTI_ALIAS_FLAG);
-    private Paint ink, dim, keyText, hero, meta, plate, fill, imageFill, wavePaint, labelPaint;
+    private Paint ink, dim, keyText, hero, meta, plate, fill, imageFill, labelPaint;
     private final Recs.Listener imagesReady = new Recs.Listener() {
         @Override public void onRecs() { if (!demo) postInvalidateOnAnimation(); }
     };
@@ -276,10 +283,6 @@ final class SearchCanvas extends View {
         plate = new Paint(Paint.ANTI_ALIAS_FLAG);
         fill = new Paint(Paint.ANTI_ALIAS_FLAG);
         imageFill = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-        wavePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        wavePaint.setStyle(Paint.Style.STROKE);
-        wavePaint.setStrokeCap(Paint.Cap.ROUND);
-        wavePaint.setStrokeJoin(Paint.Join.ROUND);
         replyTp.setTypeface(Ui.medium);
         replyTp.setTextSize(Tokens.LAYOUT_CINEMA_REPLY * k);
         replyBuilt = -1;
@@ -466,10 +469,10 @@ final class SearchCanvas extends View {
             labelPaint.setColor(Tokens.inkSecondary(night));
             c.drawText(side, tmp.right - pad - sideW, tmp.centerY() + Ui.halfCap(labelPaint), labelPaint);
         }
-        if (listening) drawListening(c);
+        if (listening) drawListening(c, now);
     }
 
-    private void drawListening(Canvas c) {
+    private void drawListening(Canvas c, long now) {
         float x = Tokens.SPACE_MARGIN * k;
         float y = 300 * k;
         hero.setTextSize(Tokens.LAYOUT_CINEMA_TITLE * k);
@@ -488,7 +491,7 @@ final class SearchCanvas extends View {
             hero.setAlpha(full);
         }
         boolean second = !lineHead.isEmpty() || !lineTail.isEmpty();
-        drawWave(c, x, y + (second ? 120 * k : 56 * k));
+        drawWave(c, x, y + (second ? 120 * k : 56 * k), now);
         dim.setColor(Tokens.inkSecondary(night));
         dim.setLetterSpacing(0.12f);
         dim.setTextSize(18 * k);
@@ -497,23 +500,26 @@ final class SearchCanvas extends View {
         dim.setTextSize(Tokens.TYPE_CAPTION * k);
     }
 
-    private void drawWave(Canvas c, float x, float y) {
-        wave.rewind();
-        float width = 360 * k;
-        float amp = (6f + 22f * mic) * k;
-        for (int i = 0; i < WAVE.length; i++) {
-            float px = x + width * i / (WAVE.length - 1f);
-            float py = y + (WAVE[i] - 0.5f) * 2f * amp;
-            if (i == 0) wave.moveTo(px, py);
-            else wave.lineTo(px, py);
+    /** Vertical bars on one centre line. Quiet: a slow idle sway. Louder: the smoothed mic level lifts them. */
+    private void drawWave(Canvas c, float x, float y, long now) {
+        int n = BARS.length;
+        float width = WAVE_W * k;
+        float step = width / n;
+        float thick = Math.max(1.25f, 1.6f * k);
+        float maxH = 28 * k;
+        boolean quiet = mic < 0.08f;
+        float level = quiet ? 0.28f : 0.3f + 0.7f * mic;
+        for (int i = 0; i < n; i++) {
+            float sway = quiet ? 0.82f + 0.18f * (float) Math.sin(now / 520.0 + i * 0.55) : 1f;
+            float h = Math.max(thick, BARS[i] * sway * level * maxH * 2f);
+            float left = x + step * i;
+            plate.setColor(BARS[i] > 0.4f ? Tokens.ink(night) : Tokens.inkSecondary(night));
+            c.drawRoundRect(left, y - h / 2f, left + thick, y + h / 2f, thick, thick, plate);
         }
-        wavePaint.setStrokeWidth(Math.max(1.5f, 2f * k));
-        wavePaint.setColor(Tokens.inkSecondary(night));
-        c.drawPath(wave, wavePaint);
     }
 
     private void drawThinking(Canvas c, long now) {
-        float x = Tokens.SPACE_MARGIN * k;
+        float x = contentLeft();
         float y = 240 * k;
         dim.setLetterSpacing(0.16f);
         dim.setTextSize(18 * k);
@@ -522,7 +528,8 @@ final class SearchCanvas extends View {
         dim.setLetterSpacing(0);
         dim.setTextSize(Tokens.TYPE_CAPTION * k);
         plate.setColor(Tokens.cinemaBone(night));
-        float[] widths = {640 * k, 560 * k, 280 * k};
+        float room = Math.max(80 * k, contentRight() - x);
+        float[] widths = {Math.min(640 * k, room), Math.min(560 * k, room * 0.85f), Math.min(280 * k, room * 0.45f)};
         float lineY = y + 36 * k;
         for (int i = 0; i < widths.length; i++) {
             tmp.set(x, lineY, x + widths[i], lineY + 18 * k);
@@ -541,7 +548,7 @@ final class SearchCanvas extends View {
         float ph = Tokens.LAYOUT_CINEMA_POSTERH * k;
         float gap = 22 * k;
         float y = Tokens.LAYOUT_CINEMA_POSTERTOP * k;
-        float x = w - Tokens.SPACE_MARGIN * k - 5 * pw - 4 * gap;
+        float x = Math.max(contentLeft(), contentRight() - 5 * pw - 4 * gap);
         plate.setColor(Tokens.cinemaBone(night));
         for (int i = 0; i < 5; i++) {
             tmp.set(x, y, x + pw, y + ph);
@@ -552,7 +559,7 @@ final class SearchCanvas extends View {
 
     /** Reply, title, buttons and the poster row. True while the entrance, the type-out or the focus scale is moving. */
     private boolean drawAnswer(Canvas c, long now) {
-        float x = Tokens.SPACE_MARGIN * k;
+        float x = contentLeft();
         float slide = (1f - focusEase(now)) * Tokens.LAYOUT_CINEMA_SLIDE * k * slideDir;
         float top = 200 * k + slide;
         boolean moving = false;
@@ -563,7 +570,7 @@ final class SearchCanvas extends View {
             hero.setTextSize(Tokens.LAYOUT_CINEMA_TITLE * k);
             hero.setColor(Tokens.ink(night));
             c.save();
-            c.clipRect(x, y - 70 * k, x + 1000 * k, y + 20 * k);
+            c.clipRect(x, y - 70 * k, contentRight(), y + 20 * k);
             c.drawText(hit.title == null ? "" : hit.title, x, y, hero);
             c.restore();
             y += 36 * k;
@@ -571,7 +578,7 @@ final class SearchCanvas extends View {
             if (hit.why != null && !hit.why.isEmpty()) {
                 meta.setColor(Tokens.inkSecondary(night));
                 c.save();
-                c.clipRect(x, y - 30 * k, x + 900 * k, y + 10 * k);
+                c.clipRect(x, y - 30 * k, contentRight(), y + 10 * k);
                 c.drawText(hit.why, x, y, meta);
                 c.restore();
                 y += 28 * k;
@@ -591,7 +598,7 @@ final class SearchCanvas extends View {
     private boolean drawReply(Canvas c, float x, float y, long now) {
         int n = reply.length();
         if (revealAt > 0) n = (int) Math.min(reply.length(), (now - revealAt) / Tokens.LAYOUT_CINEMA_TYPEMS);
-        float width = 980 * k;
+        float width = Math.max(200 * k, contentRight() - x);
         if (replyLayout == null || replyBuilt != n || replyNight != night || replyWidth != width) {
             replyBuilt = n;
             replyNight = night;
@@ -678,7 +685,7 @@ final class SearchCanvas extends View {
         if (status.isEmpty() && emptyLine.isEmpty()) emptyLine = Ui.trf("No matches for “{query}”", "query", query);
         String line = status.isEmpty() ? emptyLine : status;
         c.save();
-        c.clipRect(x, y - 60 * k, x + 1100 * k, y + 16 * k);
+        c.clipRect(x, y - 60 * k, contentRight(), y + 16 * k);
         c.drawText(line, x, y, hero);
         c.restore();
         hero.setTextSize(Tokens.LAYOUT_CINEMA_TITLE * k);
@@ -727,16 +734,21 @@ final class SearchCanvas extends View {
         float pw = Tokens.LAYOUT_CINEMA_POSTERW * k;
         float ph = Tokens.LAYOUT_CINEMA_POSTERH * k;
         float gap = 22 * k;
+        float avail = contentRight() - contentLeft();
         int n = Math.min(hits.size(), 8);
+        while (n > 1 && n * pw + (n - 1) * gap > avail) n--;
+        int start = 0;
+        if (titleIndex >= start + n) start = titleIndex - n + 1;
         float rowW = n * pw + (n - 1) * gap;
-        float x = w - Tokens.SPACE_MARGIN * k - rowW;
+        float x = Math.max(contentLeft(), contentRight() - rowW);
         float baseY = Tokens.LAYOUT_CINEMA_POSTERTOP * k;
         boolean moving = false;
         for (int i = 0; i < n; i++) {
             float delay = i * Tokens.LAYOUT_CINEMA_STAGGER;
             float t = revealAt == 0 ? 1f : ease((now - revealAt - delay) / Tokens.LAYOUT_CINEMA_FADEMS);
             if (t < 1f) moving = true;
-            boolean focused = zone == POSTER && i == index;
+            int hitAt = start + i;
+            boolean focused = zone == POSTER && hitAt == index;
             float s = focused ? 1f + (Tokens.LAYOUT_CINEMA_FOCUS - 1f) * focusEase(now) : 1f;
             float rise = (1f - t) * Tokens.LAYOUT_CINEMA_RISE * k;
             float cx = x + pw / 2f;
@@ -745,7 +757,7 @@ final class SearchCanvas extends View {
             int save = imageFill.getAlpha();
             imageFill.setAlpha((int) (255 * t));
             plate.setAlpha((int) (255 * t));
-            drawCard(c, hits.get(i), i);
+            drawCard(c, hits.get(hitAt), hitAt);
             if (focused && t > 0.2f) {
                 plate.setStyle(Paint.Style.STROKE);
                 plate.setStrokeWidth(Tokens.FOCUS_RING * k);
@@ -799,7 +811,7 @@ final class SearchCanvas extends View {
     }
 
     private void drawIdle(Canvas c) {
-        float x = Tokens.SPACE_MARGIN * k;
+        float x = contentLeft();
         float y = 280 * k;
         dim.setColor(Tokens.inkSecondary(night));
         c.drawText(Ui.tr("Or hold the remote's mic: “funny shows for tonight”"), x, y, dim);
@@ -833,18 +845,39 @@ final class SearchCanvas extends View {
         float cx = key.box.centerX(), cy = key.box.centerY();
         tmp.set(cx - key.box.width() * s / 2, cy - key.box.height() * s / 2,
                 cx + key.box.width() * s / 2, cy + key.box.height() * s / 2);
-        plate.setColor(focused ? 0xFFFFFFFF : Tokens.cinemaPill(night));
-        plate.setAlpha(focused ? 255 : alpha);
+        // Focused: solid light key, dark label (dark theme) or solid dark key, light label.
+        // Resting: a quiet fill. setAlpha() would replace the fill's own alpha and turn it solid white.
+        int fill = focused ? (night ? 0xFFFFFFFF : 0xFF1D1D1F) : (night ? 0x1FFFFFFF : 0xFFF2F2F4);
+        int color = focused ? (night ? 0xFF1D1D1F : 0xFFFFFFFF) : Tokens.ink(night);
+        plate.setColor(scaleAlpha(fill, alpha));
         c.drawRoundRect(tmp, 18 * k, 18 * k, plate);
-        plate.setAlpha(255);
-        int color = focused ? Tokens.INK_LIGHT : Tokens.ink(night);
-        keyText.setColor(color);
-        keyText.setAlpha(focused ? 255 : alpha);
+        if (!focused) {
+            plate.setStyle(Paint.Style.STROKE);
+            plate.setStrokeWidth(Math.max(1f, k));
+            plate.setColor(scaleAlpha(Tokens.cinemaTrack(night), alpha));
+            c.drawRoundRect(tmp, 18 * k, 18 * k, plate);
+            plate.setStyle(Paint.Style.FILL);
+        }
+        keyText.setColor(scaleAlpha(color, alpha));
         String label = key.action == Key.SPACE ? Ui.tr("space") : key.action == Key.DELETE ? Ui.tr("delete")
                 : key.action == Key.CLEAR ? Ui.tr("clear") : key.label;
         keyText.setTextSize((key.action == Key.CHAR ? 32 : 26) * k);
         c.drawText(label, cx, cy + Ui.halfCap(keyText), keyText);
         keyText.setAlpha(255);
+    }
+
+    /** The left edge of titles, chips and posters. The keyboard occupies everything left of this. */
+    private float contentLeft() {
+        return keysOn ? 800 * k : Tokens.SPACE_MARGIN * k;
+    }
+
+    private float contentRight() {
+        return w - Tokens.SPACE_MARGIN * k;
+    }
+
+    private static int scaleAlpha(int color, int alpha) {
+        int a = ((color >>> 24) * alpha) / 255;
+        return (a << 24) | (color & 0x00FFFFFF);
     }
 
     private Hit focusedHit() {
@@ -910,7 +943,12 @@ final class SearchCanvas extends View {
             }
             return false;
         }
-        if (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER) {
+        if (code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_NUMPAD_ENTER || code == KeyEvent.KEYCODE_SEARCH) {
+            if (keysOn) closeKeys();
+            host.commit(query);
+            return true;
+        }
+        if (code == KeyEvent.KEYCODE_DPAD_CENTER) {
             activate();
             return true;
         }
@@ -918,12 +956,9 @@ final class SearchCanvas extends View {
             backspace();
             return true;
         }
-        if (code >= KeyEvent.KEYCODE_A && code <= KeyEvent.KEYCODE_Z) {
-            type(String.valueOf((char) ('a' + code - KeyEvent.KEYCODE_A)));
-            return true;
-        }
-        if (code == KeyEvent.KEYCODE_SPACE) {
-            type(" ");
+        int typed = e.getUnicodeChar();
+        if (typed >= 32 && !Character.isISOControl(typed)) {
+            type(String.valueOf((char) typed));
             return true;
         }
         int dx = code == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : code == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : 0;
