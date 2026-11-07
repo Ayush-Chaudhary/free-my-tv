@@ -50,8 +50,9 @@ test('a Groq 429 on the main model falls back to the small model', async () => {
   const { res, json } = await run({ query: 'a funny movie' }, f);
   assert.equal(res.status, 200);
   assert.ok(json.picks.length >= 3);
-  const models = f.calls.filter((c) => c.host === 'api.groq.com').map((c) => c.body.model);
-  assert.deepEqual(models, ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'llama-3.3-70b-versatile']);
+  const groq = f.calls.filter((c) => c.host === 'api.groq.com');
+  assert.deepEqual(groq.map((c) => c.body.model), ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'openai/gpt-oss-120b']);
+  assert.ok(groq.every((c) => c.body.reasoning_effort === 'low' && c.body.response_format.type === 'json_object'));
 });
 
 test('a reply that is not JSON also falls back; both failing gives 503', async () => {

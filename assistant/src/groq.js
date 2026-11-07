@@ -1,8 +1,10 @@
 // Groq's OpenAI-compatible chat API in JSON mode. A 429 (or a server error, a timeout, or a reply that is not JSON)
 // on the main model falls back to the small one; if that fails too, the caller gets an UpstreamError.
 
-export const MODEL = 'llama-3.3-70b-versatile';
-export const FALLBACK_MODEL = 'llama-3.1-8b-instant';
+// Groq retired llama-3.3-70b-versatile and llama-3.1-8b-instant (they 503 as llm_unavailable).
+// gpt-oss on Groq still does JSON mode (response_format json_object), which is all this Worker asks for.
+export const MODEL = 'openai/gpt-oss-120b';
+export const FALLBACK_MODEL = 'openai/gpt-oss-20b';
 const URL = 'https://api.groq.com/openai/v1/chat/completions';
 
 export class UpstreamError extends Error {
@@ -10,6 +12,19 @@ export class UpstreamError extends Error {
     super(message);
     this.status = status;
   }
+}
+
+function answerText(message) {
+  if (!message || typeof message !== 'object') return '';
+  if (typeof message.content === 'string' && message.content.trim()) return message.content;
+  const calls = message.tool_calls;
+  if (Array.isArray(calls)) {
+    for (const call of calls) {
+      const args = call && call.function && call.function.arguments;
+      if (typeof args === 'string' && args.trim()) return args;
+    }
+  }
+  return '';
 }
 
 async function once(model, messages, { env, fetch, timeoutMs, maxTokens }) {
@@ -20,13 +35,18 @@ async function once(model, messages, { env, fetch, timeoutMs, maxTokens }) {
       method: 'POST',
       headers: { authorization: `Bearer ${env.GROQ_KEY}`, 'content-type': 'application/json' },
       body: JSON.stringify({
-        model, messages, temperature: 0.3, max_tokens: maxTokens, response_format: { type: 'json_object' },
+        model, messages, temperature: 0.3, max_tokens: maxTokens,
+        reasoning_effort: 'low',
+        response_format: { type: 'json_object' },
       }),
       signal: ctl.signal,
     });
     if (!res.ok) throw Object.assign(new Error(`groq ${res.status}`), { status: res.status });
     const body = await res.json();
-    const text = body && body.choices && body.choices[0] && body.choices[0].message && body.choices[0].message.content;
+    const message = body && body.choices && body.choices[0] && body.choices[0].message;
+    // gpt-oss also returns a `reasoning` string. The answer is message.content (JSON mode) or,
+    // if a tool call is how the model answered, that call's arguments. Never parse `reasoning`.
+    const text = answerText(message);
     const parsed = JSON.parse(text);
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('groq: not an object');
     return parsed;

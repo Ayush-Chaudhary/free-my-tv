@@ -10,7 +10,7 @@ It holds the Groq and TMDB keys, so neither is in the app or the repo. No sign-u
 
 `POST /v1/turn` with `Authorization: Bearer <token>`:
 
-1. **Plan.** Groq (Llama 3.3 70B, JSON mode) turns the request into `intent`, title `searches` (spelling variants),
+1. **Plan.** Groq (`openai/gpt-oss-120b`, JSON mode, `reasoning_effort: low`) turns the request into `intent`, title `searches` (spelling variants),
    a TMDB `discover` filter and `like`. It's told the speech may come from Indian English, Hindi or Hinglish and may be misheard. Replies are always in plain English.
 2. **Fetch.** TMDB, in parallel: `/search/multi` (a term with no result is retried loosened, and results are ranked
    by how alike their title sounds), `/discover/*` on the TV's services in the region, `/recommendations` for
@@ -20,7 +20,7 @@ It holds the Groq and TMDB keys, so neither is in the app or the repo. No sign-u
    the region's flat-rate providers list one of the request's `services`. `reply` is cut to 220 characters.
 
 If Groq answers 429, a server error, a timeout or something that isn't JSON, the call is retried once on
-Llama 3.1 8B. If that fails too, the status is 503 (or 504), and the TV shows plain search.
+`openai/gpt-oss-20b`. If that fails too, the status is 503 (or 504), and the TV shows plain search.
 
 ### Request and response (v1)
 

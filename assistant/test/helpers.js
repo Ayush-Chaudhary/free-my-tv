@@ -50,7 +50,8 @@ export function fakeFetch({ groq = [], tmdb = {} }) {
       if (typeof next === 'number') return reply(next, { error: { message: 'x' } });
       if (next === 'garbage') return reply(200, { choices: [{ message: { content: 'not json at all' } }] });
       const content = typeof next === 'string' ? fx(next) : next;   // a fixture name, or the model's JSON inline
-      return reply(200, { choices: [{ message: { content: JSON.stringify(content) } }] });
+      // `reasoning` is what gpt-oss adds beside the answer; the Worker must ignore it.
+      return reply(200, { choices: [{ message: { reasoning: 'thinking, not the JSON answer', content: JSON.stringify(content) } }] });
     }
     if (u.host === 'api.themoviedb.org') {
       const t = tmdb[u.pathname.replace('/3', '')];
