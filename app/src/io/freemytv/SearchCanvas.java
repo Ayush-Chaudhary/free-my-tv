@@ -671,6 +671,15 @@ final class SearchCanvas extends View {
         c.drawText(text, tmp.left + 12 * k, tmp.centerY() + Ui.halfCap(labelPaint), labelPaint);
     }
 
+    /** Installed apps and titles on those apps stay "Open" / "Open in {service}". Anything else keeps the same action. */
+    private static String openLabel(Hit hit) {
+        if (hit != null && !hit.app) {
+            if (hit.service != null && !hit.service.isEmpty()) return Ui.trf("Open in {service}", "service", hit.service);
+            return Ui.tr("Find where to watch");
+        }
+        return Ui.tr("Open");
+    }
+
     private String badge(Hit hit) {
         if (hit.service != null && !hit.service.isEmpty()) return hit.service;
         if (hit.app) return hit.meta == null ? "" : hit.meta;
@@ -683,8 +692,7 @@ final class SearchCanvas extends View {
         if (titleIndex != openFor) {
             openFor = titleIndex;
             Hit hit = focusedHit();
-            openLabel = hit != null && hit.service != null && !hit.service.isEmpty()
-                    ? Ui.trf("Open in {service}", "service", hit.service) : Ui.tr("Open");
+            openLabel = openLabel(hit);
         }
         float used = drawButton(c, openLabel, x, y, true, zone == BUTTON && index == 0, now);
         drawButton(c, Ui.tr("More like this"), x + used + 16 * k, y, false, zone == BUTTON && index == 1, now);
