@@ -36,6 +36,7 @@ If Groq answers 429, a server error, a timeout or something that isn't JSON, the
 
 `intent` is `recommend`, `search`, `open_app` (with `"app": "netflix"`, only for an app in `services`) or `chat`
 (a reply, no picks). `service` is `null` when none of the TV's apps streams it in the region.
+Phase 2 moves that lookup onto the TV: [Phase 2: TV app fills in `service`](../claude/research/ai-assistant.md#phase-2-tv-app-fills-in-service).
 
 | Status | Meaning |
 |---|---|
