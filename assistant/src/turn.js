@@ -47,10 +47,10 @@ function historyText(history) {
 }
 
 export async function runTurn(req, env, deps) {
-  const { fetch, now, cache } = deps;
+  const { fetch, now, cache, httpCache } = deps;
   const stats = { llm: 0, tmdb: 0, groq: null };
   const ctx = { env, fetch, now, stats, deadline: now() + 5500 };
-  const tmdb = new Tmdb(env, fetch, stats, cache);
+  const tmdb = new Tmdb(env, fetch, stats, cache, httpCache);
   const lang = req.lang;
   const out = (body) => ({ body, stats });
 
