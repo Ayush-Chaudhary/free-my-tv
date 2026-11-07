@@ -15,9 +15,20 @@ const NAMES = new Map(Object.entries(GENRES).map(([k, v]) => [v, k]));
 for (const [k, v] of Object.entries(TV_GENRES)) if (!NAMES.has(v)) NAMES.set(v, k);
 NAMES.set(10759, 'action'); NAMES.set(10765, 'scifi'); NAMES.set(10768, 'war');
 
+function asNames(names) {
+  if (Array.isArray(names)) return names;
+  if (typeof names === 'string') return names.split(/[,|/]/);
+  if (typeof names === 'number') return [names];
+  if (names && typeof names === 'object') {
+    const vals = Object.values(names).filter((v) => typeof v === 'string' || typeof v === 'number');
+    return vals.length ? vals : Object.keys(names);
+  }
+  return [];
+}
+
 export function genreIds(names, kind) {
   const out = new Set();
-  for (const n of names || []) {
+  for (const n of asNames(names)) {
     const key = String(n).toLowerCase().replace(/[^a-z]/g, '').replace(/^sci?fi.*|sciencefiction/, 'scifi');
     if (kind === 'tv' && key in TV_GENRES) out.add(TV_GENRES[key]);
     else if (key in GENRES && !(kind === 'tv' && ['horror', 'romance'].includes(key))) out.add(GENRES[key]);
@@ -43,7 +54,12 @@ export class Tmdb {
     this.stats.tmdb += 1;
     const res = await this.fetch(url.toString(), { headers });
     if (!res.ok) throw new UpstreamError(`tmdb ${res.status}`, 502);
-    return res.json();
+    try {
+      const data = await res.json();
+      return data && typeof data === 'object' ? data : {};
+    } catch {
+      throw new UpstreamError('tmdb: not json', 502);
+    }
   }
 
   /** TMDB's provider ids, by service key, for the region; the list is cached for a while in the isolate. */
@@ -51,7 +67,8 @@ export class Tmdb {
     let list = this.cache.get(region);
     if (!list || list.at < Date.now() - 6 * 3600e3) {
       const data = await this.get('/watch/providers/movie', { watch_region: region });
-      list = { at: Date.now(), items: (data.results || []).map((p) => [p.provider_id, serviceOf(p.provider_name, p.provider_id)]) };
+      const rows = Array.isArray(data.results) ? data.results : [];
+      list = { at: Date.now(), items: rows.filter((p) => p && typeof p === 'object').map((p) => [p.provider_id, serviceOf(p.provider_name, p.provider_id)]) };
       this.cache.set(region, list);
     }
     const want = new Set(services);
@@ -62,7 +79,8 @@ export class Tmdb {
   async search(term, lang) {
     const run = async (q) => {
       const data = await this.get('/search/multi', { query: q, language: lang, include_adult: 'false' });
-      return (data.results || []).filter((r) => r.media_type === 'movie' || r.media_type === 'tv');
+      const rows = Array.isArray(data.results) ? data.results : [];
+      return rows.filter((r) => r && (r.media_type === 'movie' || r.media_type === 'tv'));
     };
     let found = await run(term);
     if (!found.length) {
@@ -83,27 +101,29 @@ export class Tmdb {
       language: lang, include_adult: 'false', watch_region: region,
       with_watch_monetization_types: 'flatrate',
       with_watch_providers: providerIds.join('|'),
-      with_genres: genreIds(d.genres, kind).join(','),
-      'with_runtime.lte': Number.isFinite(d.runtime_lte) ? Math.round(d.runtime_lte) : undefined,
-      with_original_language: /^[a-z]{2,3}$/.test(d.language || '') ? d.language : undefined,
+      with_genres: genreIds(d && d.genres, kind).join(','),
+      'with_runtime.lte': finite(d && d.runtime_lte),
+      with_original_language: /^[a-z]{2,3}$/.test(String((d && d.language) || '')) ? String(d.language) : undefined,
       sort_by: rating ? 'vote_average.desc' : 'popularity.desc',
       'vote_count.gte': rating ? 300 : undefined,
     };
-    if (Number.isFinite(d.year_gte)) params[movie ? 'primary_release_date.gte' : 'first_air_date.gte'] = `${Math.round(d.year_gte)}-01-01`;
+    const year = finite(d && d.year_gte);
+    if (year !== undefined) params[movie ? 'primary_release_date.gte' : 'first_air_date.gte'] = `${year}-01-01`;
     const data = await this.get(`/discover/${kind}`, params);
-    return (data.results || []).slice(0, 10).map((r) => slim(r, kind));
+    return rowsOf(data).slice(0, 10).map((r) => slim(r, kind)).filter(Boolean);
   }
 
   async recommendations(kind, id, lang) {
     const data = await this.get(`/${kind}/${id}/recommendations`, { language: lang });
-    return (data.results || []).slice(0, 6).map((r) => slim(r, kind));
+    return rowsOf(data).slice(0, 6).map((r) => slim(r, kind)).filter(Boolean);
   }
 
   /** The TV's own service that streams this title in the region (flat rate), or null. */
   async serviceFor(c, region, services) {
     try {
       const data = await this.get(`/${c.kind}/${c.id}/watch/providers`);
-      const flat = ((data.results || {})[region] || {}).flatrate || [];
+      const byRegion = data.results && typeof data.results === 'object' && !Array.isArray(data.results) ? data.results : {};
+      const flat = Array.isArray((byRegion[region] || {}).flatrate) ? byRegion[region].flatrate : [];
       const want = new Set(services);
       for (const p of flat) {
         const key = serviceOf(p.provider_name, p.provider_id);
@@ -116,13 +136,25 @@ export class Tmdb {
   }
 }
 
+function finite(v) {
+  if (v === null || v === undefined || v === '') return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(n) : undefined;
+}
+
+function rowsOf(data) {
+  return Array.isArray(data && data.results) ? data.results.filter((r) => r && typeof r === 'object') : [];
+}
+
 function slim(r, kind) {
+  if (!r || typeof r !== 'object' || !r.id) return null;
   const title = r.title || r.name || '';
   const date = r.release_date || r.first_air_date || '';
+  const genreIds = Array.isArray(r.genre_ids) ? r.genre_ids : [];
   return {
     id: r.id, kind, title, year: /^\d{4}/.test(date) ? Number(date.slice(0, 4)) : null,
     overview: String(r.overview || '').slice(0, 110),
-    genres: (r.genre_ids || []).map((g) => NAMES.get(g)).filter(Boolean),
+    genres: genreIds.map((g) => NAMES.get(g)).filter(Boolean),
     lang: r.original_language || '', rating: r.vote_average ? Math.round(r.vote_average * 10) / 10 : null,
   };
 }

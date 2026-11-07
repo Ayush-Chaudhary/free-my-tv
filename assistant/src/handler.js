@@ -45,6 +45,9 @@ export async function handle(request, env, deps = {}) {
     const { body, stats } = await runTurn(req, env, { fetch: deps.fetch || fetch, now, cache: deps.cache || sharedCache });
     return done(json(200, body), { llm: stats.llm, tmdb: stats.tmdb, picks: body.picks.length, intent: body.intent });
   } catch (e) {
+    // Name, message and stack only. Never the query, the token or a request body.
+    console.error(e && e.name, e && String(e.message || '').slice(0, 300));
+    if (e && e.stack) console.error(String(e.stack).slice(0, 1500));
     const status = e instanceof UpstreamError ? e.status : 500;
     return done(json(status, { error: status === 504 ? 'timeout' : status === 503 ? 'llm_unavailable' : status === 502 ? 'upstream' : 'error' }));
   }

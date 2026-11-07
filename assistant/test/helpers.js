@@ -33,6 +33,16 @@ export async function makeEnv({ perMinute = 10, hash } = {}) {
 
 const reply = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
+/** The fields a real gpt-oss JSON-mode completion adds around `message.content`. */
+export function gptOss(content) {
+  return {
+    id: 'chatcmpl-test', object: 'chat.completion', model: 'openai/gpt-oss-120b',
+    choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', reasoning: 'thinking, not the JSON answer', content } }],
+    usage: { prompt_tokens: 120, completion_tokens: 40, total_tokens: 160, completion_tokens_details: { reasoning_tokens: 12 } },
+    x_groq: { id: 'req_test' },
+  };
+}
+
 /**
  * A fetch for Groq and TMDB. `groq` is a list of answers used in order: a fixture name or an object (its JSON is wrapped as a chat
  * completion), a number (an error status), or "garbage" (a reply that is not JSON). `tmdb` maps a path to a fixture
@@ -48,10 +58,11 @@ export function fakeFetch({ groq = [], tmdb = {} }) {
       const next = queue.shift();
       if (next === undefined) return reply(500, { error: 'no more groq answers' });
       if (typeof next === 'number') return reply(next, { error: { message: 'x' } });
-      if (next === 'garbage') return reply(200, { choices: [{ message: { content: 'not json at all' } }] });
+      if (next === 'garbage') return reply(200, gptOss('not json at all'));
+      if (next && typeof next === 'object' && next.__raw) return reply(next.status ?? 200, next.body);
       const content = typeof next === 'string' ? fx(next) : next;   // a fixture name, or the model's JSON inline
-      // `reasoning` is what gpt-oss adds beside the answer; the Worker must ignore it.
-      return reply(200, { choices: [{ message: { reasoning: 'thinking, not the JSON answer', content: JSON.stringify(content) } }] });
+      const text = next && next.__fence ? '```json\n' + JSON.stringify(content.json) + '\n```' : JSON.stringify(content);
+      return reply(200, gptOss(text));
     }
     if (u.host === 'api.themoviedb.org') {
       const t = tmdb[u.pathname.replace('/3', '')];

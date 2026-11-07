@@ -70,16 +70,20 @@ export async function runTurn(req, env, deps) {
   const add = (list) => { for (const c of list) if (c.id && !known.has(`${c.kind}:${c.id}`)) known.set(`${c.kind}:${c.id}`, c); };
   const searches = (Array.isArray(plan.searches) ? plan.searches : []).filter((s) => typeof s === 'string' && s.trim()).slice(0, 4);
   const jobs = searches.map((t) => tmdb.search(t, lang));
-  const like = plan.like && req.history.some((h) => h.picks.some((p) => p.id === plan.like.id && p.kind === plan.like.kind)) ? plan.like : null;
-  if (like) jobs.push(tmdb.recommendations(like.kind, like.id, lang).then((l) => l.map((c) => ({ ...c, rec: true }))));
-  const d = plan.discover && typeof plan.discover === 'object' ? plan.discover : null;
+  const likeRaw = plan.like && typeof plan.like === 'object' && !Array.isArray(plan.like) ? plan.like : null;
+  const likeId = Number(likeRaw && likeRaw.id);
+  const likeKind = likeRaw && likeRaw.kind === 'tv' ? 'tv' : 'movie';
+  const like = likeRaw && likeId > 0 && req.history.some((h) => h.picks.some((p) => p.id === likeId && p.kind === likeKind))
+    ? { kind: likeKind, id: likeId } : null;
+  if (like) jobs.push(tmdb.recommendations(like.kind, like.id, lang).then((l) => (Array.isArray(l) ? l : []).map((c) => ({ ...c, rec: true }))));
+  const d = plan.discover && typeof plan.discover === 'object' && !Array.isArray(plan.discover) ? plan.discover : null;
   if (d) {
     jobs.push(tmdb.providerIds(req.region, req.services).then((ids) => {
       const kinds = d.kind === 'tv' ? ['tv'] : d.kind === 'movie' ? ['movie'] : ['movie', 'tv'];
       return Promise.all(kinds.map((k) => tmdb.discover(k, d, lang, req.region, ids))).then((r) => r.flat());
     }));
   }
-  const results = await Promise.all(jobs);
+  const results = (await Promise.all(jobs)).map((list) => (Array.isArray(list) ? list.filter((c) => c && c.id) : []));
   // Title matches first (what the person named), then "more like", then the filtered list, interleaved by kind.
   const named = results.slice(0, searches.length).flat();
   const rest = results.slice(searches.length);
@@ -98,7 +102,7 @@ export async function runTurn(req, env, deps) {
   const chosen = await chatJson([
     { role: 'system', content: chooseSystem(req.lang) },
     { role: 'user', content: `History (oldest first):\n${historyText(req.history) || '(none)'}\n\nThe person said: ${JSON.stringify(req.query)}\n`
-      + (d && Number.isFinite(d.runtime_lte) ? `Titles were filtered to at most ${Math.round(d.runtime_lte)} minutes.\n` : '')
+      + (d && d.runtime_lte !== null && d.runtime_lte !== '' && Number.isFinite(Number(d.runtime_lte)) ? `Titles were filtered to at most ${Math.round(Number(d.runtime_lte))} minutes.\n` : '')
       + `\nCandidates:\n${JSON.stringify(view)}` },
   ], ctx);
 
