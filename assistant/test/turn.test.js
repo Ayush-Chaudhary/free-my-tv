@@ -263,21 +263,40 @@ test('search ranks only the first page of titles, and keeps a match inside that 
   assert.ok(!found.some((c) => c.id === 99));
 });
 
-test('a watch-providers body is read from this region, not from an earlier country', () => {
-  const countries = {};
-  for (const cc of ['AE', 'DE', 'FR', 'GB', 'IN', 'US']) {
-    countries[cc] = {
-      link: `https://www.themoviedb.org/movie/1/watch?locale=${cc}`,
-      flatrate: [{ provider_id: cc === 'US' ? 9 : 8, provider_name: cc === 'US' ? 'Amazon Prime Video' : 'Netflix' }],
-      rent: [{ provider_id: 8, provider_name: 'Netflix' }],
-    };
-  }
-  const text = JSON.stringify({ id: 1, results: countries });
+test('flatrateIn slices one region: missing key, nested braces, escapes, and a region key inside a string', () => {
+  assert.deepEqual(flatrateIn('{"id":1,"results":{"GB":{"flatrate":[{"provider_id":8,"provider_name":"Netflix"}]}}}', 'US'), []);
+  assert.deepEqual(flatrateIn('{"results":{}}', 'US'), []);
+  assert.deepEqual(flatrateIn('not json', 'US'), []);
+  assert.deepEqual(flatrateIn('{"results":{"US":{"flatrate":[]}}}', 'USA'), []);
+  // The GB link contains the characters "US":{ once JSON-escaped. Braces and quotes inside US strings stay in the slice.
+  const text = JSON.stringify({
+    id: 1,
+    results: {
+      GB: {
+        link: 'https://example.com/?q="US":{"flatrate":[{"provider_name":"Not Netflix"}]}',
+        flatrate: [{ provider_id: 8, provider_name: 'Netflix', logo_path: 'banner "US":{ cropped' }],
+      },
+      DE: { flatrate: [{ provider_id: 1899, provider_name: 'Max', note: 'a } brace { inside' }] },
+      US: {
+        link: 'https://www.themoviedb.org/movie/1/watch',
+        flatrate: [{ provider_id: 9, provider_name: 'Amazon Prime Video', note: 'he said "hi" {really}' }],
+        rent: [{ provider_id: 2, provider_name: 'Rent Me' }],
+      },
+    },
+  });
+  assert.ok(text.includes('\\"US\\":'), 'the decoy key is inside a string');
   const flat = flatrateIn(text, 'US');
   assert.equal(flat.length, 1);
   assert.equal(flat[0].provider_name, 'Amazon Prime Video');
-  assert.deepEqual(flatrateIn(text, 'ZZ'), []);
-  assert.deepEqual(flatrateIn('not json', 'US'), []);
+  assert.equal(flat[0].note, 'he said "hi" {really}');
+  assert.equal(flatrateIn(text, 'DE')[0].note, 'a } brace { inside');
+});
+
+test('provider lookups follow the picks, not every discover row', async () => {
+  const f = funny('groq-choose-funny');
+  await run({ query: 'a funny movie' }, f);
+  const ids = f.calls.filter((c) => /\/movie\/\d+\/watch\/providers$/.test(c.path)).map((c) => c.path.split('/')[3]);
+  assert.deepEqual(ids.sort(), ['445571', '4638', '481084', '587792']);
 });
 
 test('the plan and choose instructions keep the same words', () => {
