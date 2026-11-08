@@ -36,18 +36,14 @@ export function genreIds(names, kind) {
   return [...out];
 }
 
-const utf8 = new TextEncoder();
-const utf8dec = new TextDecoder();
-
 export class Tmdb {
-  constructor(env, fetchFn, stats, cache, httpCache) {
+  constructor(env, fetchFn, stats, cache) {
     this.env = env;
     // Workers' fetch throws if it is called as a method (`this` would be the Tmdb instance).
     const impl = fetchFn ?? globalThis.fetch;
     this.fetch = (...args) => impl(...args);
     this.stats = stats;
     this.cache = cache;
-    this.httpCache = httpCache || null;
   }
 
   request(path, params = {}) {
@@ -66,14 +62,6 @@ export class Tmdb {
     const res = await this.fetch(url, { headers });
     if (!res.ok) throw new UpstreamError(`tmdb ${res.status}`, 502);
     return res.text();
-  }
-
-  async bytes(path, params = {}) {
-    const { url, headers } = this.request(path, params);
-    this.stats.tmdb += 1;
-    const res = await this.fetch(url, { headers });
-    if (!res.ok) throw new UpstreamError(`tmdb ${res.status}`, 502);
-    return new Uint8Array(await res.arrayBuffer());
   }
 
   async get(path, params = {}) {
@@ -140,116 +128,6 @@ export class Tmdb {
     return rowsOf(data).slice(0, 6).map((r) => slim(r, kind)).filter(Boolean);
   }
 
-  /** The TV's own service that streams this title in the region (flat rate), or null. */
-  async serviceFor(c, region, services) {
-    const want = services instanceof Set ? services : new Set(services);
-    const cacheUrl = `https://cache.freemytv.internal/wp/${c.kind}/${c.id}/${region}`;
-    try {
-      const cached = await this.cachedJson(cacheUrl);
-      if (Array.isArray(cached)) return serviceFromFlat(cached, want);
-      // Bytes, not text(): workerd charges CPU to decode a ~92 KB body into a string.
-      const buf = await this.bytes(`/${c.kind}/${c.id}/watch/providers`);
-      const flat = flatrateFromBytes(buf, region).map((p) => ({
-        provider_id: p.provider_id, provider_name: p.provider_name,
-      }));
-      await this.storeJson(cacheUrl, flat, 86400);
-      return serviceFromFlat(flat, want);
-    } catch (e) {
-      // one title's providers failing only means no service on its card
-    }
-    return null;
-  }
-
-  async cachedJson(url) {
-    if (!this.httpCache) return null;
-    try {
-      const hit = await this.httpCache.match(new Request(url));
-      if (!hit) return null;
-      return await hit.json();
-    } catch {
-      return null;
-    }
-  }
-
-  async storeJson(url, value, seconds) {
-    if (!this.httpCache) return;
-    try {
-      await this.httpCache.put(new Request(url), new Response(JSON.stringify(value), {
-        headers: { 'content-type': 'application/json', 'cache-control': `public, max-age=${seconds}` },
-      }));
-    } catch {
-      // a cache that refuses the write just means the next turn fetches again
-    }
-  }
-}
-
-function serviceFromFlat(flat, want) {
-  for (const p of flat) {
-    const key = serviceOf(p.provider_name, p.provider_id);
-    if (key && want.has(key)) return key;
-  }
-  return null;
-}
-
-/** The flatrate array for `region` inside a watch-providers body, without parsing the other countries. */
-export function flatrateIn(text, region) {
-  return flatrateFromBytes(utf8.encode(String(text || '')), region);
-}
-
-/** Same slice as `flatrateIn`, over the raw body so only the region object is decoded. */
-export function flatrateFromBytes(buf, region) {
-  if (!buf || !/^[A-Za-z]{2}$/.test(region || '')) return [];
-  const marker = utf8.encode(`"${region}":`);
-  let from = 0;
-  while (from <= buf.length - marker.length) {
-    const at = findBytes(buf, marker, from);
-    if (at < 0) return [];
-    const prev = at === 0 ? 0 : buf[at - 1];
-    // A key sits after `{` (123) or `,` (44). The same letters inside a string do not.
-    if (prev !== 123 && prev !== 44) { from = at + 1; continue; }
-    let j = at + marker.length;
-    while (buf[j] === 32 || buf[j] === 10 || buf[j] === 13 || buf[j] === 9) j++;
-    if (buf[j] !== 123) { from = at + 1; continue; }
-    const end = matchBraceBytes(buf, j);
-    if (end < 0) return [];
-    try {
-      const block = JSON.parse(utf8dec.decode(buf.subarray(j, end + 1)));
-      return Array.isArray(block.flatrate) ? block.flatrate : [];
-    } catch {
-      return [];
-    }
-  }
-  return [];
-}
-
-function findBytes(buf, needle, from) {
-  const n0 = needle[0];
-  outer: for (let i = from; i <= buf.length - needle.length; i++) {
-    if (buf[i] !== n0) continue;
-    for (let k = 1; k < needle.length; k++) if (buf[i + k] !== needle[k]) continue outer;
-    return i;
-  }
-  return -1;
-}
-
-function matchBraceBytes(buf, open) {
-  let depth = 0, inStr = false, esc = false;
-  for (let i = open; i < buf.length; i++) {
-    const c = buf[i];
-    if (inStr) {
-      if (esc) esc = false;
-      else if (c === 92) esc = true;
-      else if (c === 34) inStr = false;
-      continue;
-    }
-    if (c === 34) inStr = true;
-    else if (c === 123) depth++;
-    else if (c === 125) {
-      depth--;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
 }
 
 function finite(v) {

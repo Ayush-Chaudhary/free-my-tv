@@ -2,7 +2,7 @@
 
 The backend for the AI assistant (plan: [`claude/research/ai-assistant.md`](../claude/research/ai-assistant.md)). A
 Cloudflare Worker on the **Workers Free plan** that takes what you said on the TV and answers with a short reply and
-3 to 5 titles. The TV app doesn't use it yet: this is phase 1, and it works on its own with `curl`.
+3 to 5 titles. The TV app (the Cinema search screen) calls it from phase 2; it also works on its own with `curl`.
 
 It holds the Groq and TMDB keys, so neither is in the app or the repo. No sign-up is needed to read or test the code.
 
@@ -14,10 +14,9 @@ It holds the Groq and TMDB keys, so neither is in the app or the repo. No sign-u
    a TMDB `discover` filter and `like`. It's told the speech may come from Indian English, Hindi or Hinglish and may be misheard. Replies are always in plain English.
 2. **Fetch.** TMDB, in parallel: `/search/multi` (a term with no result is retried loosened, and results are ranked
    by how alike their title sounds), `/discover/*` on the TV's services in the region, `/recommendations` for
-   "more like the second one" (only for an id in the history), then `watch/providers` for up to 15 candidates.
+   "more like the second one" (only for an id in the history). Which app streams each pick is not looked up here: the TV does it.
 3. **Choose.** Groq picks 3 to 5 ids from those candidates and writes the reply.
-4. **Check.** Only ids that came back from this turn's TMDB calls are returned, once each. `service` is set only when
-   the region's flat-rate providers list one of the request's `services`. `reply` is cut to 220 characters.
+4. **Check.** Only ids that came back from this turn's TMDB calls are returned, once each. `reply` is cut to 220 characters.
 
 If Groq answers 429, a server error, a timeout or something that isn't JSON, the call is retried once on
 `openai/gpt-oss-20b`. If that fails too, the status is 503 (or 504), and the TV shows plain search.
@@ -31,12 +30,14 @@ If Groq answers 429, a server error, a timeout or something that isn't JSON, the
 ```
 ```json
 {"reply": "Here are three short comedies.", "intent": "recommend",
- "picks": [{"id": 587792, "kind": "movie", "title": "Palm Springs", "year": 2020, "service": "hulu", "why": "90-minute time-loop comedy"}]}
+ "picks": [{"id": 587792, "kind": "movie", "title": "Palm Springs", "year": 2020, "why": "90-minute time-loop comedy"}]}
 ```
 
 `intent` is `recommend`, `search`, `open_app` (with `"app": "netflix"`, only for an app in `services`) or `chat`
-(a reply, no picks). `service` is `null` when none of the TV's apps streams it in the region.
-Phase 2 moves that lookup onto the TV: [Phase 2: TV app fills in `service`](../claude/research/ai-assistant.md#phase-2-tv-app-fills-in-service).
+(a reply, no picks). A pick has no `service` (dropped in phase 2): the TV asks TMDB `watch/providers` for each pick with its
+own key and matches the region's flat-rate list to its installed apps
+([Phase 2](../claude/research/ai-assistant.md#phase-2-tv-app-fills-in-service)). `services` still steers discover's
+`with_watch_providers` filter, so picks lean toward the TV's apps.
 
 | Status | Meaning |
 |---|---|
@@ -65,8 +66,8 @@ npx wrangler deploy       # prints https://free-my-tv-assistant.<you>.workers.de
 ./setup.sh                # makes the token, stores its hash, asks for the Groq and TMDB keys
 ```
 
-`setup.sh` prints the **device token once**. Keep it with the Worker's URL; the app will take them as
-`assistant_token` and `assistant_url` (phase 2). Try it:
+`setup.sh` prints the **device token once**. Keep it with the Worker's URL; the app takes them as
+`assistant_token` and `assistant_url` in the gitignored `config.properties`. Try it:
 
 ```bash
 curl -s -X POST https://free-my-tv-assistant.<you>.workers.dev/v1/turn \
@@ -85,7 +86,7 @@ curl -s -X POST https://free-my-tv-assistant.<you>.workers.dev/v1/turn \
   (an exact counter in a small Durable Object, free on the Workers Free plan; the day is the calendar day in New York, America/New_York, so it resets at local midnight through EST and EDT). The binding only allows
   10 or 60 second periods, which is why the daily count lives in the Durable Object.
 - **Cloudflare Free:** 100,000 requests a day, 10 ms of CPU per request (time spent waiting on Groq and TMDB doesn't
-  count) and 50 subrequests. A turn makes about 20 (2 Groq, up to 6 searches/discovers, up to 15 provider lookups).
+  count) and 50 subrequests. A turn makes about 10 (2 Groq, up to 6 searches/discovers).
   Watch the CPU with `npm run tail`.
 - **Logs:** `[observability]` is off. The Worker logs one line per request with the status, milliseconds and counts
   only (never the text, the token or the picks), visible in `npm run tail`.

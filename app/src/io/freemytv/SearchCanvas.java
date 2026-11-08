@@ -22,13 +22,15 @@ import java.util.List;
 /**
  * Search on one canvas, in the Cinema layout: a glass pill, the focused title's backdrop, and a poster row.
  * The keyboard is hidden until OK on the pill, so results use the full width. Both themes.
- * The activity owns the TMDB request. Nothing here calls the assistant Worker.
+ * The activity owns the requests (TMDB and the assistant Worker). Nothing here uses the network.
  */
 final class SearchCanvas extends View {
     static final class Hit {
         String title = "", meta = "";
         String pkg, label;
         boolean app, store, show;
+        /** An assistant pick: a title on none of the TV's apps shows no badge. */
+        boolean quiet;
         Recs.Pick pick;
         /** Installed-app card: TV banner, or the launcher icon. */
         Bitmap art;
@@ -682,6 +684,7 @@ final class SearchCanvas extends View {
 
     private String badge(Hit hit) {
         if (hit.service != null && !hit.service.isEmpty()) return hit.service;
+        if (hit.quiet) return "";
         if (hit.app) return hit.meta == null ? "" : hit.meta;
         if (hit.store) return Ui.tr("Get from Play Store");
         if (hit.pick != null || !demo) return Ui.tr("Not on your apps");

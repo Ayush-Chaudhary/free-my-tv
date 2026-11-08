@@ -59,6 +59,8 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
     private int generation;
     private String note = "";
     private String pending = "";
+    /** Why this turn is plain search though the assistant is set up (shown once, in the status line). */
+    private String assistNote = "";
     private long listenedAt;
 
     @Override protected void onCreate(Bundle saved) {
@@ -213,7 +215,17 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
         }
         if (query.length() < 2) return;
         canvas.beginThinking();
-        String forTmdb = opened != null ? opened : query;
+        assistNote = "";
+        // A spoken request goes to the assistant when it is set up; "open Netflix" and typed searches stay plain.
+        if (voice && opened == null && Assistant.configured()) {
+            askAssistant(query, gen);
+            return;
+        }
+        plain(query, voice, gen, opened != null ? opened : query);
+    }
+
+    /** The plain TMDB title search with the TV's apps: what the screen did before the assistant, and its fallback. */
+    private void plain(String query, boolean voice, int gen, String forTmdb) {
         io.execute(() -> {
             List<Recs.Pick> found;
             try {
@@ -253,11 +265,73 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
         });
     }
 
+    /**
+     * One spoken request to the Worker. It answers whole (recommend or search, open an app, or just a reply); the TV
+     * then finds which installed app streams each pick. Any failure, or about 6 s, leaves the plain search.
+     */
+    private void askAssistant(String query, int gen) {
+        String lang = Ui.language != null && Ui.language.matches("[a-z]{2,3}(-[A-Za-z]{2,4})?") ? Ui.language : "en";
+        io.execute(() -> {
+            List<String> services = new ArrayList<>();
+            for (String[] s : Recs.installedServices(this)) if (!Prefs.serviceOff(s[0])) services.add(s[0]);
+            Assistant.Result r = Assistant.turn(query, lang, Recs.REGION, services);
+            if (r.turn == null) {
+                AppLog.w("assistant: no answer (" + (r.timeout ? "timeout" : "HTTP " + r.status) + "), plain search");
+                String why = r.status == 401 ? Ui.tr("The assistant didn't accept this TV's token. Here's a plain search.")
+                        : r.status == 429 ? Ui.tr("The assistant is resting for now. Here's a plain search.")
+                        : Ui.tr("The assistant isn't answering. Here's a plain search.");
+                handler.post(() -> {
+                    if (gen != generation || isDestroyed()) return;
+                    assistNote = why;
+                    plain(query, true, gen, query);
+                });
+                return;
+            }
+            fillApps(r.turn);
+            handler.post(() -> {
+                if (gen != generation || isDestroyed()) return;
+                present(r.turn);
+            });
+        });
+    }
+
+    /** Sets each pick's installed app from TMDB (Recs.fillApp), a few at a time. A title it can't place gets none. */
+    private void fillApps(AssistantTurn turn) {
+        if (turn.picks.isEmpty()) return;
+        ExecutorService pool = Executors.newFixedThreadPool(Math.min(5, turn.picks.size()));
+        java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(turn.picks.size());
+        for (AssistantTurn.Pick p : turn.picks) {
+            pool.execute(() -> {
+                try {
+                    Recs.Pick one = new Recs.Pick();
+                    one.id = p.id;
+                    one.kind = "tv".equals(p.kind) ? "tv" : "movie";
+                    Recs.get(this).fillApp(one);
+                    if (one.pkg != null) {
+                        p.pkg = one.pkg;
+                        p.service = Recs.serviceName(one);
+                    }
+                } catch (Exception e) {
+                    AppLog.w("assistant: apps for a pick: " + e.getMessage());
+                } finally {
+                    done.countDown();
+                }
+            });
+        }
+        try {
+            done.await(4, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        pool.shutdownNow();
+    }
+
     private void finish(int gen, boolean voice, String query, List<SearchCanvas.Hit> cards) {
         if (gen != generation) return;
         addStore(query, cards);
         String reply = "";
-        String status = note;
+        String status = note.isEmpty() ? assistNote : note;
+        assistNote = "";
         cards.sort((a, b) -> Recs.searchOrder(query, a.title, a.year, a.pick == null ? 0 : a.pick.popularity,
                 onApps(a), b.title, b.year, b.pick == null ? 0 : b.pick.popularity, onApps(b)));
         if (cards.isEmpty()) status = Ui.trf("No matches for “{query}”", "query", query);
@@ -282,8 +356,9 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
     }
 
     /**
-     * Phase 2: show one Worker turn. No network here. The TV has already filled each pick's {@code service}
-     * (null when it isn't on an installed app). {@code open_app} launches a matching app when one is installed.
+     * Show one Worker turn. No network here: the TV has already filled each pick's {@code service} and {@code pkg}
+     * (null when it isn't on an installed app, and then the card has no badge). {@code open_app} launches a matching
+     * app when one is installed.
      */
     public void present(AssistantTurn turn) {
         if (demo || turn == null) return;
@@ -305,6 +380,7 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
                 h.year = p.year;
                 h.why = p.why == null ? "" : p.why;
                 h.service = p.service;
+                h.quiet = true;
                 h.show = "tv".equals(p.kind);
                 Recs.Pick pick = new Recs.Pick();
                 pick.id = p.id;
@@ -312,12 +388,11 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
                 pick.title = h.title;
                 pick.year = p.year;
                 h.pick = pick;
-                String[] app = appForService(p.service);
-                if (app != null) {
-                    h.pkg = app[0];
-                    h.label = app[1];
-                    if (h.service == null || h.service.isEmpty()) h.service = app[1];
-                    pick.pkg = app[0];
+                if (p.pkg != null) {
+                    h.pkg = p.pkg;
+                    h.label = p.service;
+                    pick.pkg = p.pkg;
+                    pick.app = Recs.serviceKeyOf(p.pkg);
                 }
                 cards.add(h);
             }
@@ -474,6 +549,8 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
         });
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
                 .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")                    // Indian English and Hinglish
+                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-IN")
                 .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
         canvas.setListening(true, "");
         listenedAt = SystemClock.uptimeMillis();

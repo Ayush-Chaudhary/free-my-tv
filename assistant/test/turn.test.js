@@ -3,7 +3,7 @@ import test from 'node:test';
 import { handle } from '../src/handler.js';
 import { SCORE_CAP, fold, serviceOf, similarity, simplify } from '../src/match.js';
 import { planSystem, chooseSystem } from '../src/prompts.js';
-import { Tmdb, flatrateIn } from '../src/tmdb.js';
+import { Tmdb } from '../src/tmdb.js';
 import { REPLY_MAX } from '../src/turn.js';
 import { ask, fakeFetch, funnyRoutes, fx, gptOss, makeEnv } from './helpers.js';
 
@@ -26,10 +26,10 @@ test('an id that exists on TMDB but was not a candidate this turn is dropped too
   assert.deepEqual(json.picks.map((p) => p.id), [587792, 445571, 4638]);
 });
 
-test('fewer than 3 valid picks are topped up from the candidates, apps on the TV first', async () => {
+test('fewer than 3 valid picks are topped up from the candidates', async () => {
   const { json } = await run({ query: 'a funny movie' }, funny({ reply: 'x', picks: [{ id: 999999 }] }));
   assert.equal(json.picks.length, 3);
-  assert.ok(json.picks.every((p) => p.service));
+  assert.ok(json.picks.every((p) => !('service' in p)));
 });
 
 test('more than 5 picks are cut to 5', async () => {
@@ -73,13 +73,6 @@ test('the choose call failing on both models gives 503, and TMDB failing gives 5
   assert.equal(r.res.status, 502);
 });
 
-test('one title\'s providers failing only leaves it without an app', async () => {
-  const f = fakeFetch({ groq: ['groq-plan-funny', 'groq-choose-funny'], tmdb: { ...funnyRoutes(), '/movie/587792/watch/providers': 500 } });
-  const { res, json } = await run({ query: 'a funny movie' }, f);
-  assert.equal(res.status, 200);
-  assert.equal(json.picks.find((p) => p.id === 587792).service, null);
-});
-
 test('a turn stays under the 50-subrequest cap', async () => {
   const f = funny('groq-choose-funny');
   await run({ query: 'a funny movie' }, f);
@@ -103,14 +96,11 @@ test('a misheard title is found: the loose second try and the sound-alike rankin
     tmdb: {
       // TMDB finds nothing for the misheard spelling or "DDLJ", and the real title for the model's correction
       '/search/multi': (u) => (u.searchParams.get('query') === 'Dilwale Dulhania Le Jayenge' ? fx('tmdb-search-ddlj') : { page: 1, results: [] }),
-      '/movie/19404/watch/providers': 'tmdb-wp-19404',
-      '/movie/295279/watch/providers': 'tmdb-wp-295279',
     },
   });
   const { res, json } = await run({ query: 'dil vale dulhania le jayange dikhao' }, f);
   assert.equal(res.status, 200);
   assert.equal(json.picks[0].id, 19404);
-  assert.equal(json.picks[0].service, 'netflix');
   assert.ok(json.reply.startsWith("Here's Dilwale"));
   const queries = f.calls.filter((c) => c.path === '/3/search/multi').map((c) => c.search.get('query'));
   assert.ok(queries.includes('dil vale dulhania le jayange'));
@@ -122,7 +112,7 @@ test('a misheard title is found: the loose second try and the sound-alike rankin
 test('title search ranks the closest title first, ahead of a more popular lookalike, and drops people', async () => {
   const f = fakeFetch({
     groq: [{ intent: 'search', searches: ['Dilwale Dulhania Le Jayenge'], discover: null, like: null }, { reply: 'ok', picks: [{ id: 19404 }, { id: 295279 }] }],
-    tmdb: { '/search/multi': 'tmdb-search-ddlj', '/movie/19404/watch/providers': 'tmdb-wp-19404', '/movie/295279/watch/providers': 'tmdb-wp-295279' },
+    tmdb: { '/search/multi': 'tmdb-search-ddlj' },
   });
   await run({ query: 'ddlj' }, f);
   const choose = f.calls.filter((c) => c.host === 'api.groq.com')[1].body.messages[1].content;
@@ -261,42 +251,6 @@ test('search ranks only the first page of titles, and keeps a match inside that 
   const found = await tmdb.search('Exact Match', 'en');
   assert.equal(found[0].id, 4);
   assert.ok(!found.some((c) => c.id === 99));
-});
-
-test('flatrateIn slices one region: missing key, nested braces, escapes, and a region key inside a string', () => {
-  assert.deepEqual(flatrateIn('{"id":1,"results":{"GB":{"flatrate":[{"provider_id":8,"provider_name":"Netflix"}]}}}', 'US'), []);
-  assert.deepEqual(flatrateIn('{"results":{}}', 'US'), []);
-  assert.deepEqual(flatrateIn('not json', 'US'), []);
-  assert.deepEqual(flatrateIn('{"results":{"US":{"flatrate":[]}}}', 'USA'), []);
-  // The GB link contains the characters "US":{ once JSON-escaped. Braces and quotes inside US strings stay in the slice.
-  const text = JSON.stringify({
-    id: 1,
-    results: {
-      GB: {
-        link: 'https://example.com/?q="US":{"flatrate":[{"provider_name":"Not Netflix"}]}',
-        flatrate: [{ provider_id: 8, provider_name: 'Netflix', logo_path: 'banner "US":{ cropped' }],
-      },
-      DE: { flatrate: [{ provider_id: 1899, provider_name: 'Max', note: 'a } brace { inside' }] },
-      US: {
-        link: 'https://www.themoviedb.org/movie/1/watch',
-        flatrate: [{ provider_id: 9, provider_name: 'Amazon Prime Video', note: 'he said "hi" {really}' }],
-        rent: [{ provider_id: 2, provider_name: 'Rent Me' }],
-      },
-    },
-  });
-  assert.ok(text.includes('\\"US\\":'), 'the decoy key is inside a string');
-  const flat = flatrateIn(text, 'US');
-  assert.equal(flat.length, 1);
-  assert.equal(flat[0].provider_name, 'Amazon Prime Video');
-  assert.equal(flat[0].note, 'he said "hi" {really}');
-  assert.equal(flatrateIn(text, 'DE')[0].note, 'a } brace { inside');
-});
-
-test('provider lookups follow the picks, not every discover row', async () => {
-  const f = funny('groq-choose-funny');
-  await run({ query: 'a funny movie' }, f);
-  const ids = f.calls.filter((c) => /\/movie\/\d+\/watch\/providers$/.test(c.path)).map((c) => c.path.split('/')[3]);
-  assert.deepEqual(ids.sort(), ['445571', '4638', '481084', '587792']);
 });
 
 test('the plan and choose instructions keep the same words', () => {

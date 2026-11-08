@@ -81,12 +81,6 @@ export function fakeFetch({ groq = [], tmdb = {} }) {
 export const funnyRoutes = () => ({
   '/watch/providers/movie': 'tmdb-providers-movie-US',
   '/discover/movie': 'tmdb-discover-movie-comedy',
-  '/movie/587792/watch/providers': 'tmdb-wp-587792',
-  '/movie/445571/watch/providers': 'tmdb-wp-445571',
-  '/movie/4638/watch/providers': 'tmdb-wp-4638',
-  '/movie/290250/watch/providers': 'tmdb-wp-290250',
-  '/movie/481084/watch/providers': 'tmdb-wp-481084',
-  '/movie/603/watch/providers': 'tmdb-wp-603',
 });
 
 export const ask = (body, token = TOKEN) => new Request('https://assistant.example/v1/turn', {
