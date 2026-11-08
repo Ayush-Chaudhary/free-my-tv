@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -56,12 +57,20 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
     private TextToSpeech tts;
     private List<String[]> apps = new ArrayList<>();
     private boolean appsReady, demo;
-    private int generation;
+    private volatile int generation;
+    /** Background work of the latest query. A new query cancels it: queued tasks never start, running ones are interrupted. */
+    private final List<Future<?>> inflight = new ArrayList<>();
+    private ExecutorService lookups;
+    /** The turn on screen and its cards, so a provider lookup that lands late can still fill in its badge. */
+    private AssistantTurn shown;
+    private final java.util.Map<AssistantTurn.Pick, SearchCanvas.Hit> shownHits = new java.util.HashMap<>();
     private String note = "";
     private String pending = "";
     /** Why this turn is plain search though the assistant is set up (shown once, in the status line). */
     private String assistNote = "";
     private long listenedAt;
+    /** Voice language: Indian English and Hinglish first; en-US if the recognizer rejects it. */
+    private String voiceLang = "en-IN";
 
     @Override protected void onCreate(Bundle saved) {
         super.onCreate(saved);
@@ -188,6 +197,22 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
 
     private final Runnable typed = () -> run(pending, false);
 
+    /** Drops the old query's requests, so fast typing doesn't leave all the background threads busy with stale ones. */
+    private void cancelWork() {
+        for (Future<?> f : inflight) f.cancel(true);
+        inflight.clear();
+        if (lookups != null) lookups.shutdownNow();
+        lookups = null;
+        shown = null;
+        shownHits.clear();
+    }
+
+    /** Runs on {@code io} and is cancelled by the next query. Main thread only. */
+    private void work(Runnable r) {
+        inflight.removeIf(Future::isDone);
+        inflight.add(io.submit(r));
+    }
+
     private void showIdle() {
         List<String> popular = new ArrayList<>();
         for (Recs.Pick p : Recs.get(this).now(null)) {
@@ -199,6 +224,7 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
     private void run(String raw, boolean voice) {
         String query = raw == null ? "" : raw.trim();
         int gen = ++generation;
+        cancelWork();
         if (query.isEmpty()) {
             showIdle();
             return;
@@ -226,7 +252,8 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
 
     /** The plain TMDB title search with the TV's apps: what the screen did before the assistant, and its fallback. */
     private void plain(String query, boolean voice, int gen, String forTmdb) {
-        io.execute(() -> {
+        work(() -> {
+            if (gen != generation) return;
             List<Recs.Pick> found;
             try {
                 found = Recs.get(this).searchHits(forTmdb);
@@ -248,7 +275,8 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
                     return;
                 }
                 for (Recs.Pick p : hits) {
-                    io.execute(() -> {
+                    work(() -> {
+                        if (gen != generation) return;
                         try {
                             Recs.get(SearchActivity.this).fillService(p);
                         } catch (Exception e) {
@@ -271,7 +299,8 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
      */
     private void askAssistant(String query, int gen) {
         String lang = Ui.language != null && Ui.language.matches("[a-z]{2,3}(-[A-Za-z]{2,4})?") ? Ui.language : "en";
-        io.execute(() -> {
+        work(() -> {
+            if (gen != generation) return;
             List<String> services = new ArrayList<>();
             for (String[] s : Recs.installedServices(this)) if (!Prefs.serviceOff(s[0])) services.add(s[0]);
             Assistant.Result r = Assistant.turn(query, lang, Recs.REGION, services);
@@ -287,7 +316,8 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
                 });
                 return;
             }
-            fillApps(r.turn);
+            if (gen != generation) return;
+            fillApps(r.turn, gen);
             handler.post(() -> {
                 if (gen != generation || isDestroyed()) return;
                 present(r.turn);
@@ -295,10 +325,18 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
         });
     }
 
-    /** Sets each pick's installed app from TMDB (Recs.fillApp), a few at a time. A title it can't place gets none. */
-    private void fillApps(AssistantTurn turn) {
+    /**
+     * Sets each pick's installed app from TMDB (Recs.fillApp), a few at a time, and waits up to 4 s for them (each call
+     * gives up after about 3 s). A lookup that is still running then keeps going, and {@link #lateApp} fills in its
+     * card if it lands after the picks are on screen. A title it can't place gets none.
+     */
+    private void fillApps(AssistantTurn turn, int gen) {
         if (turn.picks.isEmpty()) return;
         ExecutorService pool = Executors.newFixedThreadPool(Math.min(5, turn.picks.size()));
+        handler.post(() -> {
+            if (gen != generation || isDestroyed()) pool.shutdownNow();
+            else lookups = pool;
+        });
         java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(turn.picks.size());
         for (AssistantTurn.Pick p : turn.picks) {
             pool.execute(() -> {
@@ -308,8 +346,9 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
                     one.kind = "tv".equals(p.kind) ? "tv" : "movie";
                     Recs.get(this).fillApp(one);
                     if (one.pkg != null) {
+                        p.service = Recs.serviceName(one);   // before pkg: a reader that sees pkg sees the service
                         p.pkg = one.pkg;
-                        p.service = Recs.serviceName(one);
+                        handler.post(() -> lateApp(turn, p));
                     }
                 } catch (Exception e) {
                     AppLog.w("assistant: apps for a pick: " + e.getMessage());
@@ -321,9 +360,31 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
         try {
             done.await(4, java.util.concurrent.TimeUnit.SECONDS);
         } catch (InterruptedException e) {
+            pool.shutdownNow();
             Thread.currentThread().interrupt();
+            return;
         }
-        pool.shutdownNow();
+        pool.shutdown();   // lets a slow lookup finish; the next query's cancelWork() stops it
+    }
+
+    /** A lookup that landed after the cards were drawn: give that card its badge and "Open in {service}". */
+    private void lateApp(AssistantTurn turn, AssistantTurn.Pick p) {
+        if (turn != shown || isDestroyed()) return;
+        SearchCanvas.Hit h = shownHits.get(p);
+        String pkg = p.pkg;
+        if (h == null || pkg == null || h.pkg != null) return;
+        applyApp(h, p.service, pkg);
+        canvas.hitChanged();
+    }
+
+    private static void applyApp(SearchCanvas.Hit h, String service, String pkg) {
+        h.service = service;
+        h.pkg = pkg;
+        h.label = service;
+        if (h.pick != null) {
+            h.pick.pkg = pkg;
+            h.pick.app = Recs.serviceKeyOf(pkg);
+        }
     }
 
     private void finish(int gen, boolean voice, String query, List<SearchCanvas.Hit> cards) {
@@ -364,6 +425,8 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
         if (demo || turn == null) return;
         handler.removeCallbacks(typed);
         generation++;
+        shown = null;
+        shownHits.clear();
         String reply = AssistantTurn.clip(turn.reply);
         if (AssistantTurn.OPEN_APP.equals(turn.intent)) {
             String[] app = appForService(turn.app);
@@ -379,7 +442,8 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
                 h.title = p.title == null ? "" : p.title;
                 h.year = p.year;
                 h.why = p.why == null ? "" : p.why;
-                h.service = p.service;
+                String pkg = p.pkg, service = p.service;   // a late lookup may set them any time; pkg last
+                h.service = pkg == null ? null : service;
                 h.quiet = true;
                 h.show = "tv".equals(p.kind);
                 Recs.Pick pick = new Recs.Pick();
@@ -388,14 +452,11 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
                 pick.title = h.title;
                 pick.year = p.year;
                 h.pick = pick;
-                if (p.pkg != null) {
-                    h.pkg = p.pkg;
-                    h.label = p.service;
-                    pick.pkg = p.pkg;
-                    pick.app = Recs.serviceKeyOf(p.pkg);
-                }
+                if (pkg != null) applyApp(h, service, pkg);
+                shownHits.put(p, h);
                 cards.add(h);
             }
+            shown = turn;
         }
         if (!reply.isEmpty()) speak(reply);
         canvas.show(cards, "", reply);
@@ -539,7 +600,19 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
             @Override public void onRmsChanged(float rmsdB) { canvas.setLevel(rmsdB); }
             @Override public void onBufferReceived(byte[] buffer) {}
             @Override public void onEndOfSpeech() {}
-            @Override public void onError(int error) { canvas.setListening(false, ""); }
+            @Override public void onError(int error) {
+                // ERROR_LANGUAGE_NOT_SUPPORTED (12) and _UNAVAILABLE (13) are API 31: no en-IN here, so once, listen again in en-US instead of going quiet.
+                if (error == 12 || error == 13) {
+                    if ("en-IN".equals(voiceLang)) {
+                        AppLog.w("voice: en-IN refused (" + error + "), trying en-US");
+                        voiceLang = "en-US";
+                        listenedAt = 0;
+                        handler.post(SearchActivity.this::listen);
+                        return;
+                    }
+                }
+                canvas.setListening(false, "");
+            }
             @Override public void onResults(Bundle results) { heard(results); }
             @Override public void onPartialResults(Bundle partial) {
                 ArrayList<String> said = partial == null ? null : partial.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
@@ -549,8 +622,8 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
         });
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
                 .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")                    // Indian English and Hinglish
-                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-IN")
+                .putExtra(RecognizerIntent.EXTRA_LANGUAGE, voiceLang)                  // Indian English and Hinglish
+                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, voiceLang)
                 .putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
         canvas.setListening(true, "");
         listenedAt = SystemClock.uptimeMillis();
@@ -576,6 +649,8 @@ public class SearchActivity extends Activity implements SearchCanvas.Host {
         PackageManager pm = getPackageManager();
         Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
                 .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                .putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-IN")
+                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-IN")
                 .putExtra(RecognizerIntent.EXTRA_PROMPT, Ui.tr("Search movies, shows and apps"));
         Intent google = new Intent(intent).setPackage(KATNISS);
         if (google.resolveActivity(pm) != null) intent = google;

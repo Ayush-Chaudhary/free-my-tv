@@ -575,7 +575,10 @@ final class Recs {
         String cacheKey = kind + ":" + p.id + ":" + REGION;
         String[] row = appCache.get(cacheKey);
         if (row == null) {
-            JSONObject all = get("/" + kind + "/" + p.id + "/watch/providers").optJSONObject("results");
+            // About 3 s at most, so it lands inside the search screen's 4 s wait (a normal call allows 8 s + 8 s).
+            String key = key();
+            if (key.isEmpty()) throw new IOException("no TMDB key");
+            JSONObject all = request("/" + kind + "/" + p.id + "/watch/providers", key, 1000, 2000).optJSONObject("results");
             JSONObject here = all == null ? null : all.optJSONObject(REGION);
             JSONArray flat = here == null ? null : here.optJSONArray("flatrate");
             row = NO_APP;
@@ -1412,11 +1415,15 @@ final class Recs {
     private static final String REJECTED = "TMDB rejected the key";
 
     private static JSONObject request(String path, String key) throws IOException, org.json.JSONException {
+        return request(path, key, 8000, 8000);
+    }
+
+    private static JSONObject request(String path, String key, int connectMs, int readMs) throws IOException, org.json.JSONException {
         boolean bearer = key.startsWith("eyJ");   // read access token (v4) or API key (v3)
         String url = API + path + (bearer ? "" : (path.contains("?") ? "&" : "?") + "api_key=" + URLEncoder.encode(key, "UTF-8"));
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(8000);
-        c.setReadTimeout(8000);
+        c.setConnectTimeout(connectMs);
+        c.setReadTimeout(readMs);
         c.setRequestProperty("Accept", "application/json");
         if (bearer) c.setRequestProperty("Authorization", "Bearer " + key);
         try {
