@@ -205,6 +205,12 @@ final class SearchCanvas extends View {
         invalidate();
     }
 
+    /** A card's badge or button changed (a provider lookup landed late): draw them again. */
+    void hitChanged() {
+        openFor = -2;
+        invalidate();
+    }
+
     /** Sample frames. No network. */
     void demo(String shot, boolean dark) {
         demo = true;

@@ -32,7 +32,7 @@ final class AssistantTurn {
         String title = "";
         int year;
         /** Set by the TV (Recs.fillApp), never by the Worker: the installed app's service key and package, or null. */
-        String service, pkg;
+        volatile String service, pkg;   // set from a lookup thread: service first, then pkg
         String why = "";
     }
 
